@@ -1,0 +1,326 @@
+#![allow(dead_code)]
+use axum::{
+    extract::Request,
+    http::StatusCode,
+    middleware::Next,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
+use uuid::Uuid;
+
+/// Validates incoming requests for common security issues
+pub async fn validate_request_middleware(req: Request, next: Next) -> Response {
+    // Check for path traversal attempts in URL
+    let uri_path = req.uri().path();
+    if contains_path_traversal(uri_path) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "INVALID_PATH",
+                    "message": "Path traversal detected in request",
+                },
+                "status": 400,
+            })),
+        )
+            .into_response();
+    }
+
+    // Check for suspicious headers
+    if let Some(user_agent) = req.headers().get("user-agent") {
+        if let Ok(ua_str) = user_agent.to_str() {
+            if is_suspicious_user_agent(ua_str) {
+                tracing::warn!("Suspicious user agent detected: {}", ua_str);
+            }
+        }
+    }
+
+    // Check content length for POST/PUT requests
+    if matches!(req.method(), &axum::http::Method::POST | &axum::http::Method::PUT) {
+        if let Some(content_length) = req.headers().get("content-length") {
+            if let Ok(length_str) = content_length.to_str() {
+                if let Ok(length) = length_str.parse::<usize>() {
+                    const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10MB
+                    if length > MAX_BODY_SIZE {
+                        return (
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            Json(json!({
+                                "error": {
+                                    "code": "PAYLOAD_TOO_LARGE",
+                                    "message": format!("Request body exceeds maximum size of {} bytes", MAX_BODY_SIZE),
+                                },
+                                "status": 413,
+                            })),
+                        ).into_response();
+                    }
+                }
+            }
+        }
+    }
+
+    next.run(req).await
+}
+
+/// Check if a path contains traversal attempts
+fn contains_path_traversal(path: &str) -> bool {
+    path.contains("..")
+        || path.contains("./")
+        || path.contains("/.")
+        || path.contains("%2e%2e")
+        || path.contains("%2e/")
+        || path.contains("/%2e")
+        || path.contains('\0')
+}
+
+/// Check for suspicious user agents (simple heuristic)
+fn is_suspicious_user_agent(ua: &str) -> bool {
+    let ua_lower = ua.to_lowercase();
+    ua_lower.contains("scanner")
+        || ua_lower.contains("crawler") && !ua_lower.contains("googlebot") && !ua_lower.contains("bingbot")
+        || ua_lower.contains("nikto")
+        || ua_lower.contains("sqlmap")
+        || ua_lower.contains("havij")
+        || ua_lower.contains("acunetix")
+}
+
+/// Validate UUID format
+pub fn validate_uuid(id: &str) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
+    Uuid::parse_str(id).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "INVALID_UUID",
+                    "message": format!("Invalid UUID format: {}", id),
+                },
+                "status": 400,
+            })),
+        )
+    })
+}
+
+/// Validate and sanitize file paths
+pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    // Check for null bytes
+    if path.contains('\0') {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "INVALID_PATH",
+                    "message": "Path contains null characters",
+                },
+                "status": 400,
+            })),
+        ));
+    }
+
+    // Check for path traversal
+    if contains_path_traversal(path) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "PATH_TRAVERSAL",
+                    "message": "Path traversal attempt detected",
+                },
+                "status": 400,
+            })),
+        ));
+    }
+
+    // Validate path length
+    const MAX_PATH_LENGTH: usize = 4096;
+    if path.len() > MAX_PATH_LENGTH {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "PATH_TOO_LONG",
+                    "message": format!("Path exceeds maximum length of {} characters", MAX_PATH_LENGTH),
+                },
+                "status": 400,
+            })),
+        ));
+    }
+
+    // Additional Windows-specific validation
+    #[cfg(windows)]
+    {
+        // Check for invalid characters in Windows paths (excluding colon after drive letter)
+        const INVALID_CHARS: &[char] = &['<', '>', '"', '|', '?', '*'];
+        for c in INVALID_CHARS {
+            if path.contains(*c) && !path.starts_with("\\\\?\\") {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "code": "INVALID_PATH_CHARS",
+                            "message": format!("Path contains invalid character: {}", c),
+                        },
+                        "status": 400,
+                    })),
+                ));
+            }
+        }
+
+        // Allow colon only in drive letter position (e.g., C:\ or C:/)
+        if path.contains(':') {
+            let colon_count = path.matches(':').count();
+            let is_drive_path =
+                (path.len() >= 2 && path.chars().nth(1) == Some(':')) || path.starts_with("\\\\?\\");
+            if colon_count > 1 || (colon_count == 1 && !is_drive_path) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "code": "INVALID_PATH_CHARS",
+                            "message": "Invalid use of colon in path",
+                        },
+                        "status": 400,
+                    })),
+                ));
+            }
+        }
+    }
+
+    Ok(path.to_string())
+}
+
+/// Validate scan options
+pub fn validate_scan_options(
+    max_depth: Option<u32>,
+    concurrency: Option<usize>,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    // Validate max_depth
+    if let Some(depth) = max_depth {
+        const MAX_ALLOWED_DEPTH: u32 = 100;
+        if depth > MAX_ALLOWED_DEPTH {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "code": "INVALID_DEPTH",
+                        "message": format!("Max depth {} exceeds maximum allowed value of {}", depth, MAX_ALLOWED_DEPTH),
+                    },
+                    "status": 400,
+                })),
+            ));
+        }
+    }
+
+    // Validate concurrency
+    if let Some(conc) = concurrency {
+        const MAX_ALLOWED_CONCURRENCY: usize = 50;
+        if conc > MAX_ALLOWED_CONCURRENCY {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "code": "INVALID_CONCURRENCY",
+                        "message": format!("Concurrency {} exceeds maximum allowed value of {}", conc, MAX_ALLOWED_CONCURRENCY),
+                    },
+                    "status": 400,
+                })),
+            ));
+        }
+        if conc == 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "code": "INVALID_CONCURRENCY",
+                        "message": "Concurrency must be at least 1",
+                    },
+                    "status": 400,
+                })),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Sanitize user input for logging
+pub fn sanitize_for_logging(input: &str) -> String {
+    // Remove control characters and limit length
+    input.chars().filter(|c| !c.is_control() || c.is_whitespace()).take(200).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_traversal_detection() {
+        assert!(contains_path_traversal("../etc/passwd"));
+        assert!(contains_path_traversal("./../../etc/passwd"));
+        assert!(contains_path_traversal("/path/../etc"));
+        assert!(contains_path_traversal("%2e%2e/etc"));
+        assert!(contains_path_traversal("path\0with\0null"));
+
+        assert!(!contains_path_traversal("/normal/path"));
+        assert!(!contains_path_traversal("C:\\Users\\test"));
+    }
+
+    #[test]
+    fn test_suspicious_user_agents() {
+        assert!(is_suspicious_user_agent("nikto/2.1.5"));
+        assert!(is_suspicious_user_agent("sqlmap/1.0"));
+        assert!(is_suspicious_user_agent("random scanner bot"));
+
+        assert!(!is_suspicious_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"));
+        assert!(!is_suspicious_user_agent("Googlebot/2.1"));
+    }
+
+    #[test]
+    fn test_uuid_validation() {
+        assert!(validate_uuid("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(validate_uuid("not-a-uuid").is_err());
+        assert!(validate_uuid("550e8400-e29b-41d4-a716").is_err());
+    }
+
+    #[test]
+    fn test_file_path_validation() {
+        assert!(validate_file_path("/normal/path").is_ok());
+        assert!(validate_file_path("C:\\Users\\test").is_ok());
+
+        assert!(validate_file_path("../etc/passwd").is_err());
+        assert!(validate_file_path("path\0with\0null").is_err());
+
+        #[cfg(windows)]
+        {
+            assert!(validate_file_path("C:\\file<name>.txt").is_err());
+            assert!(validate_file_path("\\\\?\\C:\\file<name>.txt").is_ok()); // Extended path syntax allows it
+        }
+
+        let long_path = "a".repeat(5000);
+        assert!(validate_file_path(&long_path).is_err());
+    }
+
+    #[test]
+    fn test_scan_options_validation() {
+        assert!(validate_scan_options(Some(10), Some(5)).is_ok());
+        assert!(validate_scan_options(None, None).is_ok());
+
+        assert!(validate_scan_options(Some(101), Some(5)).is_err());
+        assert!(validate_scan_options(Some(10), Some(51)).is_err());
+        assert!(validate_scan_options(Some(10), Some(0)).is_err());
+    }
+
+    #[test]
+    fn test_sanitize_for_logging() {
+        assert_eq!(sanitize_for_logging("normal text"), "normal text");
+        assert_eq!(sanitize_for_logging("text\nwith\nnewlines"), "text\nwith\nnewlines");
+
+        let with_control = "text\x00with\x01control\x02chars";
+        let sanitized = sanitize_for_logging(with_control);
+        assert!(!sanitized.contains('\x00'));
+        assert!(!sanitized.contains('\x01'));
+        assert!(!sanitized.contains('\x02'));
+
+        let long_text = "a".repeat(300);
+        assert_eq!(sanitize_for_logging(&long_text).len(), 200);
+    }
+}

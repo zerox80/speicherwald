@@ -1,0 +1,23 @@
+# SpeicherWald default configuration
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[database]
+url = "sqlite://data/speicherwald.db"
+
+[scan_defaults]
+follow_symlinks = false
+include_hidden = true
+measure_logical = true
+measure_allocated = true
+excludes = []
+
+[scanner]
+batch_size = 4000
+flush_threshold = 8000
+flush_interval_ms = 750
+# handle_limit optional – weglassen bedeutet kein explizites Limit
+dir_concurrency = 12
+#handle_limit = 2048

@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  speicherwald:
+    build: .
+    container_name: speicherwald
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - speicherwald-logs:/app/logs
+    environment:
+      - SPEICHERWALD__SERVER__HOST=0.0.0.0
+      - SPEICHERWALD__SERVER__PORT=8080
+      - SPEICHERWALD__DATABASE__URL=sqlite:///app/data/speicherwald.db
+    restart: unless-stopped
+    networks:
+      - speicherwald-network
+
+volumes:
+  speicherwald-logs:
+    driver: local
+
+networks:
+  speicherwald-network:
+    driver: bridge

@@ -1,0 +1,19 @@
+# Trunk configuration for building the Dioxus (WASM) web UI
+# Output directly into the backend's static directory so Axum can serve /
+
+[build]
+dist = "../ui"
+public_url = "/"
+release = true
+minify = "always"
+
+[tools]
+# Ensure we use the stable toolchain unless otherwise configured
+wasm_bindgen = "0.2.101"
+
+# NOTE: Trunk currently expects simple string versions in [tools].
+# The nested tools.wasm_opt table is not supported and causes a parse error.
+# If you need wasm-opt flags, pass them via environment for the build session,
+# or adjust Rust flags to not emit bulk-memory/nontrapping ops.
+# [tools.wasm_opt]
+# args = ["--enable-bulk-memory", "--enable-nontrapping-fptoint"]

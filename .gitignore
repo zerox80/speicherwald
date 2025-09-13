@@ -1,0 +1,52 @@
+# Rust / Cargo
+**/*.rs.bk
+**/target/
+
+# IDEs
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Editor swap/backups
+*.swp
+*.swo
+*.swm
+*~
+*.bak
+*.tmp
+*.old
+
+# App data
+/data/
+/logs/
+
+# SQLite (WAL) artifacts
+*.db
+*.sqlite
+*.db-shm
+*.db-wal
+
+# Trunk/Dioxus cache (if created)
+/.trunk/
+/webui/.trunk/
+/webui/pkg/
+
+# Keep built Web UI artifacts tracked (required for desktop and backend serving)
+!/ui/
+!/ui/**
+
+# Windows debug symbols (outside target)
+*.pdb
+
+# Local config/env (keep example files tracked)
+.env
+speicherwald.toml
+.env.local
+.env.*
+!.env.example

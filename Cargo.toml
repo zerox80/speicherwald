@@ -1,0 +1,66 @@
+[package]
+name = "speicherwald"
+version = "0.1.0"
+edition = "2021"
+authors = ["SpeicherWald Contributors"]
+license = "GPL-3.0-or-later"
+description = "Axum-basiertes Backend zur Größenanalyse von Verzeichnissen (lokal und Netzwerk) auf Windows."
+
+[dependencies]
+axum = { version = "0.7", features = ["macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "fs", "compression-full"] }
+tower = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+thiserror = "1"
+# File log rotation
+tracing-appender = "0.2"
+# SQLite + migrations
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "macros", "uuid", "time"] }
+# Muster-Ausschlüsse
+globset = "0.4"
+# Directory Walking
+walkdir = "2"
+# SSE & Streams
+tokio-stream = { version = "0.1", features = ["sync"] }
+# Cancel-Token
+tokio-util = "0.7"
+futures = "0.3"
+num_cpus = "1.16"
+config = { version = "0.14", default-features = false, features = ["toml"] }
+dotenvy = "0.15"
+# Cache für Performance-Optimierung
+lru = "0.12"
+lazy_static = "1.4"
+# Timestamps für Error Handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# SQLite statisch bündeln, um systemweite Abhängigkeiten in CI zu vermeiden
+[dependencies.libsqlite3-sys]
+version = "0.27"
+features = ["bundled"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[target.'cfg(windows)'.dependencies]
+# Windows-spezifische APIs (GetCompressedFileSizeW, Attribute)
+windows = { version = "0.56", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+hyper = "0.14"
+tower = "0.4"
+
+[[bench]]
+name = "scanner_bench"
+harness = false
+

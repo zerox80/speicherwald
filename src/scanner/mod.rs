@@ -2,6 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use std::time::Instant;
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
@@ -127,8 +128,11 @@ pub async fn run_scan(
                 }
             };
             if !options_cl.follow_symlinks && is_reparse_point(&meta) {
-                drop(permit);
-                return;
+                // UNC/DFS shares and mapped network drives should be traversed even if marked as reparse points
+                if !is_network_path(&root_clone) {
+                    drop(permit);
+                    return;
+                }
             }
             if !options_cl.include_hidden && is_hidden_or_system(&meta) {
                 drop(permit);
@@ -164,7 +168,8 @@ pub async fn run_scan(
                         };
                         if md.is_dir() {
                             if !options_cl.follow_symlinks && is_reparse_point(&md) {
-                                continue;
+                                // Allow DFS/UNC and mapped network dirs even if marked as reparse points
+                                if !is_network_path(&p) { continue; }
                             }
                             if !options_cl.include_hidden && is_hidden_or_system(&md) {
                                 continue;
@@ -312,6 +317,9 @@ pub async fn run_scan(
     drop(tx_res);
 
     let mut ticker = interval(Duration::from_millis(flush_interval_ms.max(1)));
+    // Remember last sent totals and time to avoid spamming, but still emit a heartbeat on slow shares
+    let mut last_progress_totals: (u64, u64, u64, u64) = (0, 0, 0, 0);
+    let mut last_sse_emit = Instant::now();
     loop {
         tokio::select! {
             maybe = rx_res.recv() => {
@@ -355,6 +363,25 @@ pub async fn run_scan(
                 .bind(summary.warnings as i64)
                 .bind(id.to_string())
                 .execute(&pool).await;
+
+                // Emit a throttled SSE progress update if totals changed since last tick
+                let current_totals = (
+                    summary.total_dirs,
+                    summary.total_files,
+                    summary.total_logical_size,
+                    summary.total_allocated_size,
+                );
+                if current_totals != last_progress_totals || last_sse_emit.elapsed() >= std::time::Duration::from_secs(5) {
+                    let _ = tx.send(ScanEvent::Progress {
+                        current_path: String::new(),
+                        dirs_scanned: summary.total_dirs,
+                        files_scanned: summary.total_files,
+                        logical_size: summary.total_logical_size,
+                        allocated_size: summary.total_allocated_size,
+                    });
+                    last_progress_totals = current_totals;
+                    last_sse_emit = Instant::now();
+                }
             }
         }
     }
@@ -407,6 +434,7 @@ fn scan_dir(
     let mut allocated: u64 = 0;
 
     let mut sent = 0u32;
+    let mut last_emit = Instant::now();
     let dir_str = dir.to_string_lossy().to_string();
 
     match fs::read_dir(dir) {
@@ -496,6 +524,18 @@ fn scan_dir(
                     });
                 }
 
+                // Zusätzlich: Zeitbasierte Fortschrittsupdates (z. B. auf langsamen Netzlaufwerken)
+                if last_emit.elapsed() >= std::time::Duration::from_millis(2000) {
+                    let _ = tx.send(ScanEvent::Progress {
+                        current_path: path.to_string_lossy().to_string(),
+                        dirs_scanned: summary.total_dirs + local_dirs,
+                        files_scanned: summary.total_files + local_files,
+                        logical_size: summary.total_logical_size + logical,
+                        allocated_size: summary.total_allocated_size + allocated,
+                    });
+                    last_emit = Instant::now();
+                }
+
                 // Partial flush to aggregator when buffers grow large
                 if (nodes.len() + files.len()) >= flush_threshold.max(1) {
                     let mut out_nodes: Vec<NodeRecord> = Vec::new();
@@ -557,6 +597,50 @@ fn matches_excludes(path: &Path, set: &GlobSet) -> bool {
     }
     let s = path.to_string_lossy().replace('\\', "/");
     set.is_match(&s)
+}
+
+#[inline]
+fn is_unc_path(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        // Detect classic UNC (\\server\share\...), and extended UNC (\\?\UNC\server\share\...)
+        let s = path.as_os_str().to_string_lossy();
+        s.starts_with("\\\\?\\UNC\\") || s.starts_with("\\\\")
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+#[inline]
+fn is_network_path(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        if is_unc_path(path) {
+            return true;
+        }
+        // Detect mapped network drives (e.g., Z:\)
+        let s = path.as_os_str().to_string_lossy();
+        if s.len() >= 2 && s.chars().nth(1) == Some(':') {
+            let drive = s.chars().next().unwrap_or('C');
+            let root = format!("{}:\\", drive);
+            use std::os::windows::ffi::OsStrExt;
+            use windows::core::PCWSTR;
+            use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+            let w: Vec<u16> = std::ffi::OsStr::new(&root).encode_wide().chain(std::iter::once(0)).collect();
+            unsafe {
+                let ty = GetDriveTypeW(PCWSTR(w.as_ptr()));
+                // 4 == DRIVE_REMOTE
+                return ty == 4;
+            }
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[cfg(windows)]

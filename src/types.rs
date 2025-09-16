@@ -23,6 +23,7 @@ pub struct NodeDto {
     pub allocated_size: i64,
     pub file_count: i64,
     pub dir_count: i64,
+    pub atime: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,12 +45,14 @@ pub enum TopItem {
         allocated_size: i64,
         file_count: i64,
         dir_count: i64,
+        atime: Option<i64>,
     },
     File {
         path: String,
         parent_path: Option<String>,
         logical_size: i64,
         allocated_size: i64,
+        atime: Option<i64>,
     },
 }
 
@@ -67,6 +70,7 @@ pub enum ListItem {
         file_count: i64,
         dir_count: i64,
         mtime: Option<i64>,
+        atime: Option<i64>,
     },
     File {
         name: String,
@@ -75,6 +79,7 @@ pub enum ListItem {
         logical_size: i64,
         allocated_size: i64,
         mtime: Option<i64>,
+        atime: Option<i64>,
     },
 }
 

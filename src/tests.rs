@@ -597,7 +597,8 @@ mod list_endpoint_tests {
     }
 }
 
-// Helper function for formatting bytes
+// Helper function for formatting bytes (tests only)
+#[cfg(test)]
 pub fn format_bytes(bytes: i64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
     

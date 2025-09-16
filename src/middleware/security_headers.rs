@@ -1,13 +1,21 @@
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::{HeaderName, HeaderValue},
     middleware::Next,
     response::Response,
 };
+use axum::http::header::{CONTENT_TYPE, CACHE_CONTROL, PRAGMA};
+use std::sync::Arc;
+
+use crate::config::AppConfig;
 
 /// Adds standard security-related HTTP headers to all responses.
 /// Conservative defaults chosen to avoid breaking the Web UI.
-pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
+pub async fn security_headers_middleware(
+    State(cfg): State<Arc<AppConfig>>,
+    req: Request,
+    next: Next,
+) -> Response {
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
 
@@ -36,8 +44,50 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
         HeaderValue::from_static("same-origin"),
     );
 
-    // Note: Not setting HSTS/CSP here to avoid breaking setups behind HTTP or strict CSP needs.
-    // Consider making CSP and HSTS configurable via AppConfig.
+    // Optional: HSTS & CSP via configuration
+    if let Some(sec) = cfg.security.as_ref() {
+        if sec.enable_hsts.unwrap_or(false) {
+            let max_age = sec.hsts_max_age.unwrap_or(31536000); // 1 year
+            let include_sub = if sec.hsts_include_subdomains.unwrap_or(false) { "; includeSubDomains" } else { "" };
+            let value = format!("max-age={}{}", max_age, include_sub);
+            headers.insert(HeaderName::from_static("strict-transport-security"), HeaderValue::from_str(&value).unwrap_or(HeaderValue::from_static("max-age=31536000")));
+        }
+        if let Some(csp) = &sec.csp {
+            if !csp.trim().is_empty() {
+                if let Ok(val) = HeaderValue::from_str(csp) {
+                    headers.insert(HeaderName::from_static("content-security-policy"), val);
+                }
+            }
+        }
+    }
+
+    // Defensive caching policy for API responses (JSON) and SSE streams only
+    let ct_val: Option<String> = headers
+        .get(CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok())
+        .map(|s| s.to_string());
+    if let Some(s) = ct_val.as_deref() {
+        let is_json = s.starts_with("application/json");
+        let is_sse = s.starts_with("text/event-stream");
+        if is_json || is_sse {
+            headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+            // Hint for reverse proxies not to buffer SSE
+            if is_sse {
+                headers.insert(HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no"));
+            }
+        } else {
+            // Long-lived caching for static assets
+            let is_css = s.starts_with("text/css");
+            let is_js = s.starts_with("application/javascript") || s.starts_with("text/javascript");
+            let is_wasm = s.starts_with("application/wasm");
+            if is_css || is_js || is_wasm {
+                headers.insert(CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
+                // Remove pragma if previously set by proxies
+                headers.remove(PRAGMA);
+            }
+        }
+    }
 
     res
 }

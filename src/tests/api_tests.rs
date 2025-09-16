@@ -4,9 +4,10 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use axum::middleware::from_fn;
+    use axum::middleware::from_fn_with_state;
     use tower::ServiceExt;
     use serde_json::{json, Value};
+    use http_body_util::BodyExt; // for .collect()
     use crate::state::AppState;
     use crate::routes;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -72,7 +73,10 @@ mod tests {
                 .delete(routes::scans::cancel_scan))
             .route("/scans/:id/search", axum::routing::get(routes::search::search_scan))
             .with_state(state.clone())
-            .layer(from_fn(crate::middleware::security_headers::security_headers_middleware));
+            .layer(from_fn_with_state(
+                state.config.clone(),
+                crate::middleware::security_headers::security_headers_middleware,
+            ));
 
         (app, state)
     }
@@ -151,7 +155,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap();
         
         assert!(json.get("uptime_seconds").is_some());
@@ -175,7 +179,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("name").is_some());
         assert!(json.get("version").is_some());
@@ -198,7 +202,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap();
         
         assert!(json.get("items").is_some());
@@ -235,7 +239,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         
-        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap();
         
         assert!(json.get("id").is_some());
@@ -258,7 +262,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         
-        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap();
         
         assert!(json.is_array());

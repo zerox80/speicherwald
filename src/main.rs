@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::header::CONTENT_TYPE;
-use axum::middleware::from_fn;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::{
     routing::{get, post},
     Router,
@@ -130,6 +130,9 @@ async fn main() -> anyhow::Result<()> {
     }
     let compression = CompressionLayer::new().compress_when(NoSseDefault(DefaultPredicate::new()));
 
+    // Clone config Arc for stateful middleware
+    let cfg_arc = state.config.clone();
+
     let app = Router::new()
         .route("/healthz", get(routes::health::healthz))
         .route("/readyz", get(routes::health::readyz))
@@ -142,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/scans/:id/tree", get(routes::scans::get_tree))
         .route("/scans/:id/top", get(routes::scans::get_top))
         .route("/scans/:id/list", get(routes::scans::get_list))
+        .route("/scans/:id/recent", get(routes::scans::get_recent))
         .route("/scans/:id/search", get(routes::search::search_scan))
         .route("/scans/:id/export", get(routes::export::export_scan))
         .route("/scans/:id/statistics", get(routes::export::export_statistics))
@@ -154,7 +158,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(from_fn(middleware::rate_limit::rate_limit_middleware))
         .layer(compression)
         .layer(TraceLayer::new_for_http())
-        .layer(from_fn(middleware::security_headers::security_headers_middleware));
+        .layer(from_fn_with_state(
+            cfg_arc,
+            middleware::security_headers::security_headers_middleware,
+        ));
 
     // CORS: in Debug permissiv (für lokale Entwicklung mit separater UI), in Release nicht nötig (same-origin)
     let app = if cfg!(debug_assertions) { app.layer(CorsLayer::permissive()) } else { app };
@@ -169,11 +176,25 @@ async fn main() -> anyhow::Result<()> {
 
     info!("SpeicherWald listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            info!("Shutdown signal received. Stopping server...");
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = term.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    info!("Shutdown signal received. Stopping server...");
 }

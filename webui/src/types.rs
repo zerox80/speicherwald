@@ -37,20 +37,21 @@ pub struct NodeDto {
     pub allocated_size: i64,
     pub file_count: i64,
     pub dir_count: i64,
+    pub atime: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TopItem {
-    Dir { path: String, parent_path: Option<String>, depth: i64, logical_size: i64, allocated_size: i64, file_count: i64, dir_count: i64 },
-    File { path: String, parent_path: Option<String>, logical_size: i64, allocated_size: i64 },
+    Dir { path: String, parent_path: Option<String>, depth: i64, logical_size: i64, allocated_size: i64, file_count: i64, dir_count: i64, atime: Option<i64> },
+    File { path: String, parent_path: Option<String>, logical_size: i64, allocated_size: i64, atime: Option<i64> },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ListItem {
-    Dir { name: String, path: String, parent_path: Option<String>, depth: i64, logical_size: i64, allocated_size: i64, file_count: i64, dir_count: i64, mtime: Option<i64> },
-    File { name: String, path: String, parent_path: Option<String>, logical_size: i64, allocated_size: i64, mtime: Option<i64> },
+    Dir { name: String, path: String, parent_path: Option<String>, depth: i64, logical_size: i64, allocated_size: i64, file_count: i64, dir_count: i64, mtime: Option<i64>, atime: Option<i64> },
+    File { name: String, path: String, parent_path: Option<String>, logical_size: i64, allocated_size: i64, mtime: Option<i64>, atime: Option<i64> },
 }
 
 // Search results

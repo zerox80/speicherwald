@@ -90,11 +90,10 @@ pub async fn search_scan(
         return Err(AppError::InvalidInput("Must include at least files or directories".to_string()));
     }
 
-    // We'll fetch a superset of results from each source to respect global ORDER+LIMIT+OFFSET.
+    // We'll execute a single UNION query with global ORDER+LIMIT+OFFSET.
     // Clamp to keep resource usage bounded even with large offsets.
     let limit_clamped = query.limit.clamp(1, 5_000);
     let offset_clamped = query.offset.max(0);
-    let fetch_count = (limit_clamped + offset_clamped).min(10_000);
 
     // Build COUNT queries (parameterized)
     let total_dirs = if include_dirs {
@@ -133,25 +132,46 @@ pub async fn search_scan(
 
     let total_count = total_dirs + total_files;
 
-    // Fetch directories
-    let mut dirs_items: Vec<SearchItem> = Vec::new();
+    // Build UNION query via QueryBuilder
+    let mut qb = QueryBuilder::new(
+        "SELECT kind, path, logical_size, allocated_size, file_count, dir_count, depth FROM ("
+    );
+    let mut first = true;
     if include_dirs {
-        let mut qb = QueryBuilder::new(
-            "SELECT path, logical_size, allocated_size, file_count, dir_count, depth FROM nodes WHERE scan_id = ",
-        );
-        qb.push_bind(scan_id.to_string()).push(" AND is_dir = 1 AND path LIKE ").push_bind(&search_pattern);
-        if let Some(min_size) = query.min_size {
-            qb.push(" AND allocated_size >= ").push_bind(min_size);
+        qb.push("SELECT 'dir' AS kind, path, logical_size, allocated_size, file_count, dir_count, depth FROM nodes WHERE scan_id = ")
+            .push_bind(scan_id.to_string())
+            .push(" AND is_dir = 1 AND path LIKE ")
+            .push_bind(&search_pattern);
+        if let Some(min_size) = query.min_size { qb.push(" AND allocated_size >= ").push_bind(min_size); }
+        if let Some(max_size) = query.max_size { qb.push(" AND allocated_size <= ").push_bind(max_size); }
+        first = false;
+    }
+    if include_files {
+        if !first { qb.push(" UNION ALL "); }
+        qb.push("SELECT 'file' AS kind, path, logical_size, allocated_size, NULL AS file_count, NULL AS dir_count, NULL AS depth FROM files WHERE scan_id = ")
+            .push_bind(scan_id.to_string())
+            .push(" AND path LIKE ")
+            .push_bind(&search_pattern);
+        if let Some(min_size) = query.min_size { qb.push(" AND allocated_size >= ").push_bind(min_size); }
+        if let Some(max_size) = query.max_size { qb.push(" AND allocated_size <= ").push_bind(max_size); }
+        if let Some(file_type) = &query.file_type {
+            let ext_pattern = format!("%.{}", file_type.to_lowercase());
+            qb.push(" AND LOWER(path) LIKE ").push_bind(ext_pattern);
         }
-        if let Some(max_size) = query.max_size {
-            qb.push(" AND allocated_size <= ").push_bind(max_size);
-        }
-        qb.push(" ORDER BY allocated_size DESC LIMIT ").push_bind(fetch_count);
-        let rows = qb.build().fetch_all(&state.db).await?;
-        for row in rows {
-            let path: String = row.try_get("path")?;
-            let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
-            dirs_items.push(SearchItem::Dir {
+    }
+    qb.push(") ORDER BY allocated_size DESC LIMIT ")
+        .push_bind(limit_clamped)
+        .push(" OFFSET ")
+        .push_bind(offset_clamped);
+
+    let rows = qb.build().fetch_all(&state.db).await?;
+    let mut items: Vec<SearchItem> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let kind: String = row.try_get("kind")?;
+        let path: String = row.try_get("path")?;
+        let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
+        if kind == "dir" {
+            items.push(SearchItem::Dir {
                 path,
                 name,
                 allocated_size: row.try_get("allocated_size")?,
@@ -160,52 +180,16 @@ pub async fn search_scan(
                 dir_count: row.try_get("dir_count")?,
                 depth: row.try_get("depth")?,
             });
-        }
-    }
-
-    // Fetch files
-    let mut file_items: Vec<SearchItem> = Vec::new();
-    if include_files {
-        let mut qb =
-            QueryBuilder::new("SELECT path, logical_size, allocated_size FROM files WHERE scan_id = ");
-        qb.push_bind(scan_id.to_string()).push(" AND path LIKE ").push_bind(&search_pattern);
-        if let Some(min_size) = query.min_size {
-            qb.push(" AND allocated_size >= ").push_bind(min_size);
-        }
-        if let Some(max_size) = query.max_size {
-            qb.push(" AND allocated_size <= ").push_bind(max_size);
-        }
-        if let Some(file_type) = &query.file_type {
-            let ext_pattern = format!("%.{}", file_type.to_lowercase());
-            qb.push(" AND LOWER(path) LIKE ").push_bind(ext_pattern);
-        }
-        qb.push(" ORDER BY allocated_size DESC LIMIT ").push_bind(fetch_count);
-        let rows = qb.build().fetch_all(&state.db).await?;
-        for row in rows {
-            let path: String = row.try_get("path")?;
-            let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
-            file_items.push(SearchItem::File {
+        } else {
+            items.push(SearchItem::File {
                 path,
                 name,
                 allocated_size: row.try_get("allocated_size")?,
                 logical_size: row.try_get("logical_size")?,
-                extension: None, // extension is not required in response
+                extension: None,
             });
         }
     }
-
-    // Merge, sort and paginate
-    let mut items = Vec::with_capacity(limit_clamped as usize);
-    items.extend(dirs_items);
-    items.extend(file_items);
-    items.sort_by_key(|i| match i {
-        SearchItem::Dir { allocated_size, .. } => *allocated_size,
-        SearchItem::File { allocated_size, .. } => *allocated_size,
-    });
-    items.reverse(); // DESC
-
-    let items =
-        items.into_iter().skip(offset_clamped as usize).take(limit_clamped as usize).collect::<Vec<_>>();
 
     Ok(Json(SearchResult { items, total_count, query: query.query }).into_response())
 }

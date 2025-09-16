@@ -38,6 +38,7 @@ pub async fn create_scan(
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/scans", ip).await {
         return Ok((status, body).into_response());
     }
+
     if req.root_paths.is_empty() {
         return Err(AppError::BadRequest("root_paths must not be empty".into()));
     }
@@ -353,6 +354,21 @@ async fn get_mtime_secs(path: &str) -> Option<i64> {
     .flatten()
 }
 
+// Async helper to fetch atime (seconds since epoch) without blocking the Tokio runtime
+async fn get_atime_secs(path: &str) -> Option<i64> {
+    let p = path.to_string();
+    tokio::task::spawn_blocking(move || {
+        std::fs::metadata(&p)
+            .and_then(|md| md.accessed())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 fn normalize_query_path(p: &str) -> String {
     let mut s = p.replace('/', "\\");
     if s.len() == 2 && s.chars().nth(1) == Some(':') {
@@ -446,19 +462,22 @@ pub async fn get_tree(
     qx = qx.bind(limit);
 
     let rows = qx.fetch_all(&state.db).await?;
-    let items: Vec<NodeDto> = rows
-        .into_iter()
-        .map(|r| NodeDto {
-            path: r.get::<String, _>("path"),
-            parent_path: r.get::<Option<String>, _>("parent_path"),
-            depth: r.get::<i64, _>("depth"),
+    let mut items: Vec<NodeDto> = Vec::with_capacity(rows.len());
+    for r in rows {
+        let path: String = r.get("path");
+        let atime = get_atime_secs(&path).await;
+        items.push(NodeDto {
+            path,
+            parent_path: r.get("parent_path"),
+            depth: r.get("depth"),
             is_dir: r.get::<i64, _>("is_dir") != 0,
-            logical_size: r.get::<i64, _>("logical_size"),
-            allocated_size: r.get::<i64, _>("allocated_size"),
-            file_count: r.get::<i64, _>("file_count"),
-            dir_count: r.get::<i64, _>("dir_count"),
-        })
-        .collect();
+            logical_size: r.get("logical_size"),
+            allocated_size: r.get("allocated_size"),
+            file_count: r.get("file_count"),
+            dir_count: r.get("dir_count"),
+            atime,
+        });
+    }
 
     Ok(Json(items))
 }
@@ -488,15 +507,18 @@ pub async fn get_top(
         .bind(limit)
         .fetch_all(&state.db)
         .await?;
-        let items: Vec<TopItem> = rows
-            .into_iter()
-            .map(|r| TopItem::File {
-                path: r.get::<String, _>("path"),
-                parent_path: r.get::<Option<String>, _>("parent_path"),
-                logical_size: r.get::<i64, _>("logical_size"),
-                allocated_size: r.get::<i64, _>("allocated_size"),
-            })
-            .collect();
+        let mut items: Vec<TopItem> = Vec::with_capacity(rows.len());
+        for r in rows {
+            let p: String = r.get("path");
+            let atime = get_atime_secs(&p).await;
+            items.push(TopItem::File {
+                path: p,
+                parent_path: r.get("parent_path"),
+                logical_size: r.get("logical_size"),
+                allocated_size: r.get("allocated_size"),
+                atime,
+            });
+        }
         return Ok(Json(items));
     }
 
@@ -509,18 +531,21 @@ pub async fn get_top(
     .bind(limit)
     .fetch_all(&state.db)
     .await?;
-    let items: Vec<TopItem> = rows
-        .into_iter()
-        .map(|r| TopItem::Dir {
-            path: r.get::<String, _>("path"),
-            parent_path: r.get::<Option<String>, _>("parent_path"),
-            depth: r.get::<i64, _>("depth"),
-            logical_size: r.get::<i64, _>("logical_size"),
-            allocated_size: r.get::<i64, _>("allocated_size"),
-            file_count: r.get::<i64, _>("file_count"),
-            dir_count: r.get::<i64, _>("dir_count"),
-        })
-        .collect();
+    let mut items: Vec<TopItem> = Vec::with_capacity(rows.len());
+    for r in rows {
+        let p: String = r.get("path");
+        let atime = get_atime_secs(&p).await;
+        items.push(TopItem::Dir {
+            path: p,
+            parent_path: r.get("parent_path"),
+            depth: r.get("depth"),
+            logical_size: r.get("logical_size"),
+            allocated_size: r.get("allocated_size"),
+            file_count: r.get("file_count"),
+            dir_count: r.get("dir_count"),
+            atime,
+        });
+    }
     Ok(Json(items))
 }
 
@@ -563,6 +588,7 @@ pub async fn get_list(
                                 .file_name().and_then(|s| s.to_str()).unwrap_or(&root).to_string();
                             let path_val: String = nr.get::<String,_>("path");
                             let mtime = get_mtime_secs(&path_val).await;
+                            let atime = get_atime_secs(&path_val).await;
                             items.push(ListItem::Dir {
                                 name,
                                 path: path_val,
@@ -573,6 +599,7 @@ pub async fn get_list(
                                 file_count: nr.get::<i64,_>("file_count"),
                                 dir_count: nr.get::<i64,_>("dir_count"),
                                 mtime,
+                                atime,
                             });
                         }
                         _ => {
@@ -586,6 +613,7 @@ pub async fn get_list(
                                     if t.is_empty() { root.clone() } else { t }
                                 });
                             let mtime = get_mtime_secs(&root).await;
+                            let atime = get_atime_secs(&root).await;
                             items.push(ListItem::Dir {
                                 name,
                                 path: root.clone(),
@@ -596,6 +624,7 @@ pub async fn get_list(
                                 file_count: 0,
                                 dir_count: 0,
                                 mtime,
+                                atime,
                             });
                         }
                     }
@@ -633,6 +662,7 @@ pub async fn get_list(
         let p: String = r.get("path");
         let name = std::path::Path::new(&p).file_name().and_then(|s| s.to_str()).unwrap_or(&p).to_string();
         let mtime = get_mtime_secs(&p).await;
+        let atime = get_atime_secs(&p).await;
         items.push(ListItem::Dir {
             name,
             path: p,
@@ -643,12 +673,14 @@ pub async fn get_list(
             file_count: r.get("file_count"),
             dir_count: r.get("dir_count"),
             mtime,
+            atime,
         });
     }
     for r in file_rows {
         let p: String = r.get("path");
         let name = std::path::Path::new(&p).file_name().and_then(|s| s.to_str()).unwrap_or(&p).to_string();
         let mtime = get_mtime_secs(&p).await;
+        let atime = get_atime_secs(&p).await;
         items.push(ListItem::File {
             name,
             path: p,
@@ -656,12 +688,119 @@ pub async fn get_list(
             logical_size: r.get("logical_size"),
             allocated_size: r.get("allocated_size"),
             mtime,
+            atime,
         });
     }
 
     sort_items(&mut items[..], q.sort.as_deref(), q.order.as_deref());
     let slice = items.into_iter().skip(offset as usize).take(limit as usize).collect::<Vec<_>>();
     Ok(Json(slice))
+}
+
+// ---------------------- RECENT ENDPOINT ----------------------
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct RecentQuery {
+    pub scope: Option<String>, // dirs|files|all
+    pub limit: Option<i64>,
+    pub path: Option<String>, // optional subtree filter
+}
+
+/// Returns most recently accessed items (based on filesystem atime), best-effort.
+/// Note: Access time may be disabled on some file systems; results may be None.
+pub async fn get_recent(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<RecentQuery>,
+) -> AppResult<impl IntoResponse> {
+    let scope = q.scope.as_deref().unwrap_or("dirs");
+    let limit = q.limit.unwrap_or(50).clamp(1, 1000);
+    // Fetch a superset to compute atime and then take top-N
+    let fetch_cap = (limit * 20).clamp(100, 5000);
+
+    // Optional subtree filter: build path range [prefix, prefix + high]
+    let mut subtree_eq: Option<String> = None;
+    let mut subtree_lo: Option<String> = None;
+    let mut subtree_hi: Option<String> = None;
+    if let Some(p) = q.path.as_ref() {
+        let peq = normalize_query_path(p);
+        let mut pfx = peq.clone();
+        if !pfx.ends_with('/') && !pfx.ends_with('\\') {
+            if pfx.contains('\\') { pfx.push('\\'); } else { pfx.push('/'); }
+        }
+        subtree_eq = Some(peq);
+        subtree_lo = Some(pfx.clone());
+        subtree_hi = Some(format!("{}{}", pfx, '\u{10ffff}'));
+    }
+
+    let mut items: Vec<TopItem> = Vec::new();
+    let want_dirs = scope == "dirs" || scope == "all";
+    let want_files = scope == "files" || scope == "all";
+
+    if want_dirs {
+        let mut sql = String::from(
+            "SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count FROM nodes WHERE scan_id=?1 AND is_dir=1",
+        );
+        if subtree_lo.is_some() {
+            sql.push_str(" AND (path = ?2 OR (path >= ?3 AND path < ?4))");
+        }
+        sql.push_str(" LIMIT ?X");
+        let sql = sql.replace("?X", &fetch_cap.to_string());
+        let mut qx = sqlx::query(&sql).bind(id.to_string());
+        if let Some(eq) = subtree_eq.as_ref() { qx = qx.bind(eq); }
+        if let Some(lo) = subtree_lo.as_ref() { qx = qx.bind(lo); }
+        if let Some(hi) = subtree_hi.as_ref() { qx = qx.bind(hi); }
+        let rows = qx.fetch_all(&state.db).await?;
+        for r in rows {
+            let p: String = r.get("path");
+            let atime = get_atime_secs(&p).await;
+            items.push(TopItem::Dir {
+                path: p,
+                parent_path: r.get("parent_path"),
+                depth: r.get("depth"),
+                logical_size: r.get("logical_size"),
+                allocated_size: r.get("allocated_size"),
+                file_count: r.get("file_count"),
+                dir_count: r.get("dir_count"),
+                atime,
+            });
+        }
+    }
+    if want_files {
+        let mut sql = String::from(
+            "SELECT path, parent_path, logical_size, allocated_size FROM files WHERE scan_id=?1",
+        );
+        if subtree_lo.is_some() {
+            sql.push_str(" AND (path = ?2 OR (path >= ?3 AND path < ?4))");
+        }
+        sql.push_str(" LIMIT ?X");
+        let sql = sql.replace("?X", &fetch_cap.to_string());
+        let mut qx = sqlx::query(&sql).bind(id.to_string());
+        if let Some(eq) = subtree_eq.as_ref() { qx = qx.bind(eq); }
+        if let Some(lo) = subtree_lo.as_ref() { qx = qx.bind(lo); }
+        if let Some(hi) = subtree_hi.as_ref() { qx = qx.bind(hi); }
+        let rows = qx.fetch_all(&state.db).await?;
+        for r in rows {
+            let p: String = r.get("path");
+            let atime = get_atime_secs(&p).await;
+            items.push(TopItem::File {
+                path: p,
+                parent_path: r.get("parent_path"),
+                logical_size: r.get("logical_size"),
+                allocated_size: r.get("allocated_size"),
+                atime,
+            });
+        }
+    }
+
+    items.sort_by_key(|i| match i {
+        TopItem::Dir { atime, .. } => atime.unwrap_or(0),
+        TopItem::File { atime, .. } => atime.unwrap_or(0),
+    });
+    items.reverse();
+    items.truncate(limit as usize);
+
+    Ok(Json(items))
 }
 
 fn sort_items(items: &mut [ListItem], sort: Option<&str>, order: Option<&str>) {
@@ -671,6 +810,7 @@ fn sort_items(items: &mut [ListItem], sort: Option<&str>, order: Option<&str>) {
         "logical" => items.sort_by_key(get_logical),
         "type" => items.sort_by_key(|i| if is_dir(i) { 0 } else { 1 }),
         "modified" => items.sort_by_key(get_mtime),
+        "accessed" => items.sort_by_key(get_atime),
         _ => items.sort_by_key(get_alloc),
     }
     if desc {
@@ -704,5 +844,12 @@ fn get_mtime(i: &ListItem) -> i64 {
     match i {
         ListItem::Dir { mtime, .. } => mtime.unwrap_or(0),
         ListItem::File { mtime, .. } => mtime.unwrap_or(0),
+    }
+}
+
+fn get_atime(i: &ListItem) -> i64 {
+    match i {
+        ListItem::Dir { atime, .. } => atime.unwrap_or(0),
+        ListItem::File { atime, .. } => atime.unwrap_or(0),
     }
 }

@@ -7,7 +7,7 @@ use std::rc::Rc;
 mod api;
 mod types;
 mod ui_utils;
-use ui_utils::{fmt_bytes, copy_to_clipboard, download_csv, trigger_download, show_toast};
+use ui_utils::{fmt_bytes, fmt_ago_short, copy_to_clipboard, download_csv, trigger_download, show_toast};
 
 // ----- Routing -----
 #[derive(Routable, Clone, Debug, PartialEq)]
@@ -74,6 +74,8 @@ fn Home(cx: Scope) -> Element {
             loading.set(false);
         });
     }
+
+    // (removed recent panel effect)
 
     let reload = {
         let scans = scans.clone();
@@ -234,9 +236,15 @@ fn Scan(cx: Scope, id: String) -> Element {
     let tree_path = use_state(cx, || None as Option<String>);
     let tree_depth = use_state(cx, || 3_i64);
     let tree_limit = use_state(cx, || 200_i64);
-    let tree_sort = use_state(cx, || "size".to_string()); // "size" | "name"
+    let tree_sort = use_state(cx, || "size".to_string()); // server hint: "size" | "name"
+    // Client-side sort controls for Tree table
+    let tree_sort_view = use_state(cx, || "allocated".to_string()); // allocated|logical|name|type|accessed
+    let tree_order = use_state(cx, || "desc".to_string());
     let top_scope = use_state(cx, || "dirs".to_string()); // "dirs" | "files"
     let top_show = use_state(cx, || 15_usize);
+    // Client-side sort controls for Top table
+    let top_sort = use_state(cx, || "allocated".to_string()); // allocated|logical|name|type|accessed
+    let top_order = use_state(cx, || "desc".to_string());
     // Explorer (Liste) Steuerung
     let list_path = use_state(cx, || None as Option<String>);
     let list_sort = use_state(cx, || "allocated".to_string());
@@ -909,54 +917,131 @@ fn Scan(cx: Scope, id: String) -> Element {
             // Top-Tabelle
             table { style: table_style(),
                 thead { tr {
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Typ" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;", "Allokiert" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;", "Logisch" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Pfad" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "type".to_string();
+                        if *top_sort.get() == key { top_order.set(if *top_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                    }, "Typ" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "accessed".to_string();
+                        if *top_sort.get() == key { top_order.set(if *top_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                    }, "Zuletzt" }
+                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "allocated".to_string();
+                        if *top_sort.get() == key { top_order.set(if *top_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                    }, "Allokiert" }
+                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "logical".to_string();
+                        if *top_sort.get() == key { top_order.set(if *top_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                    }, "Logisch" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "name".to_string();
+                        if *top_sort.get() == key { top_order.set(if *top_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                    }, "Pfad" }
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
                 } }
                 tbody {
-                    { top_items.get().iter().map(|it| {
-                        match it {
-                        types::TopItem::Dir { path, allocated_size, logical_size, .. } => rsx!{ tr {
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
-                            td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(*allocated_size)}" }
-                            td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(*logical_size)}" }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
-                                list_path.set(Some(path.clone())); 
-                                let mut hist = nav_history.get().clone();
-                                if !hist.contains(&path) { hist.push(path.clone()); }
-                                nav_history.set(hist);
-                            }, "{path}" }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                button { style: btn_style(), onclick: move |_| { copy_to_clipboard(path.clone()); }, "Kopieren" }
+                    {
+                        let mut rows = top_items.get().clone();
+                        // Sort key
+                        rows.sort_by_key(|it| match it {
+                            types::TopItem::Dir { allocated_size, logical_size, path, atime, .. } => match top_sort.get().as_str() {
+                                "logical" => *logical_size,
+                                "name" => 0,
+                                "type" => 0,
+                                "accessed" => atime.unwrap_or(0),
+                                _ => *allocated_size,
+                            },
+                            types::TopItem::File { allocated_size, logical_size, path, atime, .. } => match top_sort.get().as_str() {
+                                "logical" => *logical_size,
+                                "name" => 0,
+                                "type" => 1,
+                                "accessed" => atime.unwrap_or(0),
+                                _ => *allocated_size,
+                            },
+                        });
+                        if *top_sort.get() == "name" {
+                            rows.sort_by_key(|it| match it { types::TopItem::Dir { path, .. } | types::TopItem::File { path, .. } => path.to_lowercase() });
+                        }
+                        if *top_sort.get() == "type" {
+                            rows.sort_by_key(|it| match it { types::TopItem::Dir { .. } => 0, _ => 1 });
+                        }
+                        if *top_order.get() == "desc" { rows.reverse(); }
+                        rows.into_iter().map(|it| {
+                            match it {
+                                types::TopItem::Dir { path, allocated_size, logical_size, atime, .. } => {
+                                    let p_nav = path.clone();
+                                    let p_copy = path.clone();
+                                    rsx!{ tr {
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(atime)}" }
+                                        td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
+                                        td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
+                                            list_path.set(Some(p_nav.clone())); 
+                                            let mut hist = nav_history.get().clone();
+                                            if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
+                                            nav_history.set(hist);
+                                        }, "{path}" }
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                            button { style: btn_style(), onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
+                                        }
+                                    } }
+                                },
+                                types::TopItem::File { path, allocated_size, logical_size, atime, .. } => rsx!{ tr {
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(atime)}" }
+                                    td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
+                                    td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{path}" }
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                        button { style: btn_style(), onclick: move |_| { copy_to_clipboard(path.clone()); }, "Kopieren" }
+                                    }
+                                } },
                             }
-                        } },
-                        types::TopItem::File { path, allocated_size, logical_size, .. } => rsx!{ tr {
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
-                            td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(*allocated_size)}" }
-                            td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(*logical_size)}" }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{path}" }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                button { style: btn_style(), onclick: move |_| { copy_to_clipboard(path.clone()); }, "Kopieren" }
-                            }
-                        } },
-                    } }) }
+                        })
+                    }
                 }
             }  // table close
+            // (removed recent panel UI)
             // Baum-Ergebnisse (Detail-Liste)  
             h3 { style: "margin-top:16px;", "Baum – Ergebnisse" }
             table { style: table_style(),
                 thead { tr {
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Typ" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;", "Allokiert" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;", "Logisch" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Pfad" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "type".to_string();
+                        if *tree_sort_view.get() == key { tree_order.set(if *tree_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                    }, "Typ" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "accessed".to_string();
+                        if *tree_sort_view.get() == key { tree_order.set(if *tree_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                    }, "Zuletzt" }
+                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "allocated".to_string();
+                        if *tree_sort_view.get() == key { tree_order.set(if *tree_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                    }, "Allokiert" }
+                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "logical".to_string();
+                        if *tree_sort_view.get() == key { tree_order.set(if *tree_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                    }, "Logisch" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "name".to_string();
+                        if *tree_sort_view.get() == key { tree_order.set(if *tree_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                    }, "Pfad" }
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
                 } }
                 tbody {
-                    { tree_items.get().iter().map(|n| {
+                    { let mut rows = tree_items.get().clone();
+                      rows.sort_by_key(|n| match tree_sort_view.get().as_str() {
+                          "logical" => n.logical_size,
+                          "name" => 0,
+                          "type" => if n.is_dir { 0 } else { 1 },
+                          "accessed" => n.atime.unwrap_or(0),
+                          _ => n.allocated_size,
+                      });
+                      if *tree_sort_view.get() == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
+                      if *tree_order.get() == "desc" { rows.reverse(); }
+                      rows.into_iter().map(|n| {
                         let t = if n.is_dir { "Ordner" } else { "Datei" };
                         let alloc = n.allocated_size; let logical = n.logical_size; let p = n.path.clone();
                         let percent = if max_alloc_tree > 0 { ((alloc as f64) / (max_alloc_tree as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
@@ -966,6 +1051,7 @@ fn Scan(cx: Scope, id: String) -> Element {
                         let bar_class = if n.is_dir { "bar-fill-indigo" } else { "bar-fill-green" };
                         rsx!{ tr {
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
+                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.atime)}" }
                             td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
                             td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
@@ -1196,10 +1282,31 @@ fn Scan(cx: Scope, id: String) -> Element {
             }
             table { style: table_style(),
                 thead { tr {
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Name" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Typ" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;", "Allokiert" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;", "Logisch" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "name".to_string();
+                        if *list_sort.get() == key { list_order.set(if *list_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                        list_offset.set(0);
+                    }, "Name" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "type".to_string();
+                        if *list_sort.get() == key { list_order.set(if *list_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                        list_offset.set(0);
+                    }, "Typ" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "accessed".to_string();
+                        if *list_sort.get() == key { list_order.set(if *list_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                        list_offset.set(0);
+                    }, "Zuletzt" }
+                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "allocated".to_string();
+                        if *list_sort.get() == key { list_order.set(if *list_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                        list_offset.set(0);
+                    }, "Allokiert" }
+                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                        let key = "logical".to_string();
+                        if *list_sort.get() == key { list_order.set(if *list_order.get() == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                        list_offset.set(0);
+                    }, "Logisch" }
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
                 } }
                 tbody {
@@ -1243,7 +1350,7 @@ fn Scan(cx: Scope, id: String) -> Element {
                         })
                         .map(|it| {
                         match it {
-                            types::ListItem::Dir { name, path, allocated_size, logical_size, .. } => {
+                            types::ListItem::Dir { name, path, allocated_size, logical_size, atime, .. } => {
                                 let alloc = *allocated_size; let logical = *logical_size; let p = path.clone();
                                 let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
                                 let bar_width = format!("width:{:.1}%;", percent);
@@ -1255,6 +1362,7 @@ fn Scan(cx: Scope, id: String) -> Element {
                                         nav_history.set(hist);
                                     }, "{name}" }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(*atime)}" }
                                     td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
                                     td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
@@ -1264,13 +1372,14 @@ fn Scan(cx: Scope, id: String) -> Element {
                                     }
                                 } }
                             }
-                            types::ListItem::File { name, allocated_size, logical_size, .. } => {
+                            types::ListItem::File { name, allocated_size, logical_size, atime, .. } => {
                                 let alloc = *allocated_size; let logical = *logical_size;
                                 let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
                                 let bar_width = format!("width:{:.1}%;", percent);
                                 rsx!{ tr {
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name}" }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(*atime)}" }
                                     td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
                                     td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",

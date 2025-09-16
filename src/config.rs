@@ -33,12 +33,21 @@ pub struct ScannerConfig {
     pub dir_concurrency: Option<usize>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SecurityConfig {
+    pub enable_hsts: Option<bool>,
+    pub hsts_max_age: Option<u64>,
+    pub hsts_include_subdomains: Option<bool>,
+    pub csp: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub scan_defaults: ScanDefaultsConfig,
     pub scanner: ScannerConfig,
+    pub security: Option<SecurityConfig>,
 }
 
 impl Default for AppConfig {
@@ -86,7 +95,28 @@ pub fn load() -> anyhow::Result<AppConfig> {
 
     let cfg = builder.build()?;
     let app_cfg: AppConfig = cfg.try_deserialize()?;
+    validate(&app_cfg)?;
     Ok(app_cfg)
+}
+
+fn validate(cfg: &AppConfig) -> anyhow::Result<()> {
+    // Server
+    if cfg.server.port == 0 {
+        return Err(anyhow::anyhow!("invalid server.port: {}", cfg.server.port));
+    }
+
+    // Scanner
+    if cfg.scanner.batch_size == 0 { return Err(anyhow::anyhow!("scanner.batch_size must be > 0")); }
+    if cfg.scanner.flush_threshold == 0 { return Err(anyhow::anyhow!("scanner.flush_threshold must be > 0")); }
+    if cfg.scanner.flush_threshold < cfg.scanner.batch_size { return Err(anyhow::anyhow!("scanner.flush_threshold must be >= batch_size")); }
+    if cfg.scanner.flush_interval_ms == 0 { return Err(anyhow::anyhow!("scanner.flush_interval_ms must be > 0")); }
+    if let Some(dc) = cfg.scanner.dir_concurrency { if dc == 0 || dc > 1000 { return Err(anyhow::anyhow!("scanner.dir_concurrency must be in 1..=1000")); } }
+    if let Some(h) = cfg.scanner.handle_limit { if h == 0 { return Err(anyhow::anyhow!("scanner.handle_limit must be > 0 when set")); } }
+
+    // Scan defaults
+    if let Some(c) = cfg.scan_defaults.concurrency { if c == 0 || c > 1000 { return Err(anyhow::anyhow!("scan_defaults.concurrency must be in 1..=1000")); } }
+
+    Ok(())
 }
 
 pub fn ensure_sqlite_parent_dir(url: &str) -> anyhow::Result<()> {

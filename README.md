@@ -18,36 +18,6 @@ SpeicherWald is a powerful, open-source disk space analyzer built with Rust and 
 - **💾 Persistent Storage**: SQLite database for scan history
 - **🔍 Smart Filtering**: Exclude patterns, hidden files handling
 
-## Table of Contents
-
-- [🌟 Highlights](#-highlights)
-- [🛠️ Technology Stack](#️-technology-stack)
-- [📋 System Requirements](#-system-requirements)
-- [🎯 Target Audience](#-target-audience)
-- [Overview](#overview)
-- [✨ Features](#-features)
-- [📁 Project Structure](#-project-structure)
-- [🧱 Architecture](#-architecture)
-- [🗄️ Data model](#️-data-model)
-- [🚀 Quick Start](#-quick-start)
-- [📦 Installation](#-installation-recommended)
-- [🔨 Manual Builds](#-manual-builds)
-- [🐳 Docker/Compose Quick Start](#-dockercompose-quick-start)
-- [⚙️ Configuration](#️-configuration)
-- [🔒 Rate Limiting](#-rate-limiting)
-- [💡 Usage](#-usage)
-- [🔌 API Reference](#-api-reference)
-- [🔧 Troubleshooting](#-troubleshooting)
-- [🧪 Development & Testing](#-development--testing)
-- [♻️ Continuous Integration](#-continuous-integration)
-- [📦 Packaging & Distribution](#-packaging--distribution)
-- [⚡ Performance Tuning](#-performance-tuning)
-- [⚠️ Known Limitations & Notes](#️-known-limitations--notes)
-- [🗺️ Roadmap (suggested)](#️-roadmap-suggested)
-- [🔒 Security](#-security)
-- [🤝 Contributing](#-contributing)
-- [📄 License](#-license)
-
 ## 🛠️ Technology Stack
 
 - Backend (Rust, 2021 edition)
@@ -348,6 +318,20 @@ flush_interval_ms = 750
 dir_concurrency = 12
 # handle_limit optional — omitting means no explicit limit
 #handle_limit = 2048
+
+### Security headers (optional)
+
+You can enable HSTS and define a Content Security Policy via environment variables or
+`speicherwald.toml`. Only enable HSTS when the app is served via HTTPS (or behind a TLS-terminating
+proxy), otherwise browsers may block HTTP access.
+
+Example (PowerShell):
+
+```powershell
+$env:SPEICHERWALD__SECURITY__ENABLE_HSTS = "true"
+$env:SPEICHERWALD__SECURITY__HSTS_MAX_AGE = "31536000"   # 1 year
+$env:SPEICHERWALD__SECURITY__HSTS_INCLUDE_SUBDOMAINS = "true"
+$env:SPEICHERWALD__SECURITY__CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
 ```
 
 Desktop specifics: The desktop app sets the database to a user-writable location (`%LocalAppData%\SpeicherWald\speicherwald.db`) at runtime via `SPEICHERWALD__DATABASE__URL` to avoid permission issues.

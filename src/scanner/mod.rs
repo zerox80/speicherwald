@@ -1,8 +1,8 @@
+use std::time::Instant;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use std::time::Instant;
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
@@ -123,6 +123,9 @@ pub async fn run_scan(
                         code: "metadata_failed".into(),
                         message: "failed to stat root".into(),
                     });
+                    let mut warn_summary = ScanResultSummary::default();
+                    warn_summary.warnings = 1;
+                    let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                     drop(permit);
                     return;
                 }
@@ -163,13 +166,18 @@ pub async fn run_scan(
                                     code: "metadata_failed".into(),
                                     message: "failed to stat".into(),
                                 });
+                                let mut warn_summary = ScanResultSummary::default();
+                                warn_summary.warnings = 1;
+                                let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                                 continue;
                             }
                         };
                         if md.is_dir() {
                             if !options_cl.follow_symlinks && is_reparse_point(&md) {
                                 // Allow DFS/UNC and mapped network dirs even if marked as reparse points
-                                if !is_network_path(&p) { continue; }
+                                if !is_network_path(&p) {
+                                    continue;
+                                }
                             }
                             if !options_cl.include_hidden && is_hidden_or_system(&md) {
                                 continue;
@@ -229,6 +237,9 @@ pub async fn run_scan(
                         code: "read_dir_failed".into(),
                         message: "failed to read directory".into(),
                     });
+                    let mut warn_summary = ScanResultSummary::default();
+                    warn_summary.warnings = 1;
+                    let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                 }
             }
 

@@ -55,8 +55,11 @@ pub async fn create_scan(
     // Validate roots exist
     for p in &req.root_paths {
         let pb = PathBuf::from(p);
-        if !pb.exists() {
-            return Err(AppError::BadRequest(format!("root path does not exist: {}", p)));
+        let meta = tokio::fs::metadata(&pb)
+            .await
+            .map_err(|_| AppError::BadRequest(format!("root path does not exist: {}", p)))?;
+        if !meta.is_dir() {
+            return Err(AppError::BadRequest(format!("root path is not a directory: {}", p)));
         }
     }
 
@@ -726,7 +729,11 @@ pub async fn get_recent(
         let peq = normalize_query_path(p);
         let mut pfx = peq.clone();
         if !pfx.ends_with('/') && !pfx.ends_with('\\') {
-            if pfx.contains('\\') { pfx.push('\\'); } else { pfx.push('/'); }
+            if pfx.contains('\\') {
+                pfx.push('\\');
+            } else {
+                pfx.push('/');
+            }
         }
         subtree_eq = Some(peq);
         subtree_lo = Some(pfx.clone());
@@ -747,9 +754,15 @@ pub async fn get_recent(
         sql.push_str(" LIMIT ?X");
         let sql = sql.replace("?X", &fetch_cap.to_string());
         let mut qx = sqlx::query(&sql).bind(id.to_string());
-        if let Some(eq) = subtree_eq.as_ref() { qx = qx.bind(eq); }
-        if let Some(lo) = subtree_lo.as_ref() { qx = qx.bind(lo); }
-        if let Some(hi) = subtree_hi.as_ref() { qx = qx.bind(hi); }
+        if let Some(eq) = subtree_eq.as_ref() {
+            qx = qx.bind(eq);
+        }
+        if let Some(lo) = subtree_lo.as_ref() {
+            qx = qx.bind(lo);
+        }
+        if let Some(hi) = subtree_hi.as_ref() {
+            qx = qx.bind(hi);
+        }
         let rows = qx.fetch_all(&state.db).await?;
         for r in rows {
             let p: String = r.get("path");
@@ -776,9 +789,15 @@ pub async fn get_recent(
         sql.push_str(" LIMIT ?X");
         let sql = sql.replace("?X", &fetch_cap.to_string());
         let mut qx = sqlx::query(&sql).bind(id.to_string());
-        if let Some(eq) = subtree_eq.as_ref() { qx = qx.bind(eq); }
-        if let Some(lo) = subtree_lo.as_ref() { qx = qx.bind(lo); }
-        if let Some(hi) = subtree_hi.as_ref() { qx = qx.bind(hi); }
+        if let Some(eq) = subtree_eq.as_ref() {
+            qx = qx.bind(eq);
+        }
+        if let Some(lo) = subtree_lo.as_ref() {
+            qx = qx.bind(lo);
+        }
+        if let Some(hi) = subtree_hi.as_ref() {
+            qx = qx.bind(hi);
+        }
         let rows = qx.fetch_all(&state.db).await?;
         for r in rows {
             let p: String = r.get("path");

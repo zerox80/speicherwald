@@ -64,7 +64,8 @@ pub async fn export_scan(
         return Err(AppError::NotFound("Scan not found".to_string()));
     }
 
-    let limit = query.limit.unwrap_or(10000).min(100000);
+    let requested_limit = query.limit.unwrap_or(10_000);
+    let limit = requested_limit.max(1).min(100_000);
     let scope = query.scope.as_deref().unwrap_or("all");
 
     match query.format.as_str() {
@@ -75,60 +76,82 @@ pub async fn export_scan(
 }
 
 async fn export_csv(state: AppState, scan_id: Uuid, scope: &str, limit: i64) -> AppResult<impl IntoResponse> {
+    use axum::http::HeaderValue;
+
+    const NODE_HEADER: &str =
+        "Type,Path,Parent Path,Depth,Is Directory,Logical Size,Allocated Size,File Count,Dir Count\n";
+    const FILE_HEADER: &str = "Type,Path,Parent Path,Logical Size,Allocated Size\n";
+
+    let include_nodes = scope == "all" || scope == "nodes";
+    let include_files = scope == "all" || scope == "files";
+
     let mut csv_content = String::new();
 
-    if scope == "all" || scope == "nodes" {
-        // Export nodes
-        csv_content.push_str(
-            "Type,Path,Parent Path,Depth,Is Directory,Logical Size,Allocated Size,File Count,Dir Count\n",
-        );
+    if include_nodes {
+        csv_content.push_str(NODE_HEADER);
+        let rows = sqlx::query(
+            "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count \
+             FROM nodes WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2",
+        )
+        .bind(scan_id.to_string())
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await?;
 
-        let nodes =
-            sqlx::query("SELECT * FROM nodes WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2")
-                .bind(scan_id.to_string())
-                .bind(limit)
-                .fetch_all(&state.db)
-                .await?;
+        for row in rows {
+            let path: String = row.get("path");
+            let parent: Option<String> = row.get("parent_path");
+            let depth: i64 = row.get("depth");
+            let is_dir_flag: bool = row.get::<i64, _>("is_dir") != 0;
+            let logical_size: i64 = row.get("logical_size");
+            let allocated_size: i64 = row.get("allocated_size");
+            let file_count: i64 = row.get("file_count");
+            let dir_count: i64 = row.get("dir_count");
 
-        for node in nodes {
             csv_content.push_str(&format!(
                 "Node,\"{}\",\"{}\",{},{},{},{},{},{}\n",
-                escape_csv(&node.get::<String, _>("path")),
-                node.get::<Option<String>, _>("parent_path").as_deref().unwrap_or(""),
-                node.get::<i64, _>("depth"),
-                node.get::<i64, _>("is_dir"),
-                node.get::<i64, _>("logical_size"),
-                node.get::<i64, _>("allocated_size"),
-                node.get::<i64, _>("file_count"),
-                node.get::<i64, _>("dir_count"),
+                escape_csv(&path),
+                escape_csv(parent.as_deref().unwrap_or("")),
+                depth,
+                if is_dir_flag { 1 } else { 0 },
+                logical_size,
+                allocated_size,
+                file_count,
+                dir_count,
             ));
         }
     }
 
-    if scope == "all" || scope == "files" {
-        if scope == "files" {
-            csv_content.push_str("Type,Path,Parent Path,Logical Size,Allocated Size\n");
-        }
+    if include_nodes && include_files && !csv_content.is_empty() {
+        csv_content.push('\n');
+    }
 
-        let files =
-            sqlx::query("SELECT * FROM files WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2")
-                .bind(scan_id.to_string())
-                .bind(limit)
-                .fetch_all(&state.db)
-                .await?;
+    if include_files {
+        csv_content.push_str(FILE_HEADER);
+        let rows = sqlx::query(
+            "SELECT path, parent_path, logical_size, allocated_size \
+             FROM files WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2",
+        )
+        .bind(scan_id.to_string())
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await?;
 
-        for file in files {
+        for row in rows {
+            let path: String = row.get("path");
+            let parent: Option<String> = row.get("parent_path");
+            let logical_size: i64 = row.get("logical_size");
+            let allocated_size: i64 = row.get("allocated_size");
+
             csv_content.push_str(&format!(
                 "File,\"{}\",\"{}\",{},{}\n",
-                escape_csv(&file.get::<String, _>("path")),
-                file.get::<Option<String>, _>("parent_path").as_deref().unwrap_or(""),
-                file.get::<i64, _>("logical_size"),
-                file.get::<i64, _>("allocated_size"),
+                escape_csv(&path),
+                escape_csv(parent.as_deref().unwrap_or("")),
+                logical_size,
+                allocated_size,
             ));
         }
     }
-
-    use axum::http::HeaderValue;
 
     let mut response = csv_content.into_response();
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));

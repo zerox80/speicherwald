@@ -2,6 +2,9 @@
 **/*.rs.bk
 **/target/
 
+# Desktop Tauri build artifacts
+desktop/src-tauri/target-tauri/
+
 # IDEs
 .vscode/
 .idea/

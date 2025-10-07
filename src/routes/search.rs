@@ -134,7 +134,7 @@ pub async fn search_scan(
 
     // Build UNION query via QueryBuilder
     let mut qb = QueryBuilder::new(
-        "SELECT kind, path, logical_size, allocated_size, file_count, dir_count, depth FROM ("
+        "SELECT kind, path, logical_size, allocated_size, file_count, dir_count, depth FROM (",
     );
     let mut first = true;
     if include_dirs {
@@ -142,18 +142,28 @@ pub async fn search_scan(
             .push_bind(scan_id.to_string())
             .push(" AND is_dir = 1 AND path LIKE ")
             .push_bind(&search_pattern);
-        if let Some(min_size) = query.min_size { qb.push(" AND allocated_size >= ").push_bind(min_size); }
-        if let Some(max_size) = query.max_size { qb.push(" AND allocated_size <= ").push_bind(max_size); }
+        if let Some(min_size) = query.min_size {
+            qb.push(" AND allocated_size >= ").push_bind(min_size);
+        }
+        if let Some(max_size) = query.max_size {
+            qb.push(" AND allocated_size <= ").push_bind(max_size);
+        }
         first = false;
     }
     if include_files {
-        if !first { qb.push(" UNION ALL "); }
+        if !first {
+            qb.push(" UNION ALL ");
+        }
         qb.push("SELECT 'file' AS kind, path, logical_size, allocated_size, NULL AS file_count, NULL AS dir_count, NULL AS depth FROM files WHERE scan_id = ")
             .push_bind(scan_id.to_string())
             .push(" AND path LIKE ")
             .push_bind(&search_pattern);
-        if let Some(min_size) = query.min_size { qb.push(" AND allocated_size >= ").push_bind(min_size); }
-        if let Some(max_size) = query.max_size { qb.push(" AND allocated_size <= ").push_bind(max_size); }
+        if let Some(min_size) = query.min_size {
+            qb.push(" AND allocated_size >= ").push_bind(min_size);
+        }
+        if let Some(max_size) = query.max_size {
+            qb.push(" AND allocated_size <= ").push_bind(max_size);
+        }
         if let Some(file_type) = &query.file_type {
             let ext_pattern = format!("%.{}", file_type.to_lowercase());
             qb.push(" AND LOWER(path) LIKE ").push_bind(ext_pattern);

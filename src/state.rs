@@ -28,7 +28,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(db: sqlx::SqlitePool, config: AppConfig) -> Self {
         let rate_limiter = EndpointRateLimiter::new().with_limits(vec![
-            ("/scans", 60, 60),            // 60 scans per minute
+            ("/scans", 60, 60),             // 60 scans per minute
             ("/scans/:id/search", 600, 60), // 600 searches per minute
             ("/drives", 120, 60),           // 120 drive lists per minute
         ]);

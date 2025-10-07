@@ -106,15 +106,35 @@ fn validate(cfg: &AppConfig) -> anyhow::Result<()> {
     }
 
     // Scanner
-    if cfg.scanner.batch_size == 0 { return Err(anyhow::anyhow!("scanner.batch_size must be > 0")); }
-    if cfg.scanner.flush_threshold == 0 { return Err(anyhow::anyhow!("scanner.flush_threshold must be > 0")); }
-    if cfg.scanner.flush_threshold < cfg.scanner.batch_size { return Err(anyhow::anyhow!("scanner.flush_threshold must be >= batch_size")); }
-    if cfg.scanner.flush_interval_ms == 0 { return Err(anyhow::anyhow!("scanner.flush_interval_ms must be > 0")); }
-    if let Some(dc) = cfg.scanner.dir_concurrency { if dc == 0 || dc > 1000 { return Err(anyhow::anyhow!("scanner.dir_concurrency must be in 1..=1000")); } }
-    if let Some(h) = cfg.scanner.handle_limit { if h == 0 { return Err(anyhow::anyhow!("scanner.handle_limit must be > 0 when set")); } }
+    if cfg.scanner.batch_size == 0 {
+        return Err(anyhow::anyhow!("scanner.batch_size must be > 0"));
+    }
+    if cfg.scanner.flush_threshold == 0 {
+        return Err(anyhow::anyhow!("scanner.flush_threshold must be > 0"));
+    }
+    if cfg.scanner.flush_threshold < cfg.scanner.batch_size {
+        return Err(anyhow::anyhow!("scanner.flush_threshold must be >= batch_size"));
+    }
+    if cfg.scanner.flush_interval_ms == 0 {
+        return Err(anyhow::anyhow!("scanner.flush_interval_ms must be > 0"));
+    }
+    if let Some(dc) = cfg.scanner.dir_concurrency {
+        if dc == 0 || dc > 1000 {
+            return Err(anyhow::anyhow!("scanner.dir_concurrency must be in 1..=1000"));
+        }
+    }
+    if let Some(h) = cfg.scanner.handle_limit {
+        if h == 0 {
+            return Err(anyhow::anyhow!("scanner.handle_limit must be > 0 when set"));
+        }
+    }
 
     // Scan defaults
-    if let Some(c) = cfg.scan_defaults.concurrency { if c == 0 || c > 1000 { return Err(anyhow::anyhow!("scan_defaults.concurrency must be in 1..=1000")); } }
+    if let Some(c) = cfg.scan_defaults.concurrency {
+        if c == 0 || c > 1000 {
+            return Err(anyhow::anyhow!("scan_defaults.concurrency must be in 1..=1000"));
+        }
+    }
 
     Ok(())
 }

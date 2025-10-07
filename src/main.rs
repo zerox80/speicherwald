@@ -158,10 +158,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(from_fn(middleware::rate_limit::rate_limit_middleware))
         .layer(compression)
         .layer(TraceLayer::new_for_http())
-        .layer(from_fn_with_state(
-            cfg_arc,
-            middleware::security_headers::security_headers_middleware,
-        ));
+        .layer(from_fn_with_state(cfg_arc, middleware::security_headers::security_headers_middleware));
 
     // CORS: in Debug permissiv (für lokale Entwicklung mit separater UI), in Release nicht nötig (same-origin)
     let app = if cfg!(debug_assertions) { app.layer(CorsLayer::permissive()) } else { app };
@@ -175,9 +172,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     info!("SpeicherWald listening on http://{}", listener.local_addr()?);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
 
     Ok(())
 }

@@ -1,10 +1,10 @@
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA};
 use axum::{
     extract::{Request, State},
     http::{HeaderName, HeaderValue},
     middleware::Next,
     response::Response,
 };
-use axum::http::header::{CONTENT_TYPE, CACHE_CONTROL, PRAGMA};
 use std::sync::Arc;
 
 use crate::config::AppConfig;
@@ -48,9 +48,13 @@ pub async fn security_headers_middleware(
     if let Some(sec) = cfg.security.as_ref() {
         if sec.enable_hsts.unwrap_or(false) {
             let max_age = sec.hsts_max_age.unwrap_or(31536000); // 1 year
-            let include_sub = if sec.hsts_include_subdomains.unwrap_or(false) { "; includeSubDomains" } else { "" };
+            let include_sub =
+                if sec.hsts_include_subdomains.unwrap_or(false) { "; includeSubDomains" } else { "" };
             let value = format!("max-age={}{}", max_age, include_sub);
-            headers.insert(HeaderName::from_static("strict-transport-security"), HeaderValue::from_str(&value).unwrap_or(HeaderValue::from_static("max-age=31536000")));
+            headers.insert(
+                HeaderName::from_static("strict-transport-security"),
+                HeaderValue::from_str(&value).unwrap_or(HeaderValue::from_static("max-age=31536000")),
+            );
         }
         if let Some(csp) = &sec.csp {
             if !csp.trim().is_empty() {
@@ -62,10 +66,8 @@ pub async fn security_headers_middleware(
     }
 
     // Defensive caching policy for API responses (JSON) and SSE streams only
-    let ct_val: Option<String> = headers
-        .get(CONTENT_TYPE)
-        .and_then(|ct| ct.to_str().ok())
-        .map(|s| s.to_string());
+    let ct_val: Option<String> =
+        headers.get(CONTENT_TYPE).and_then(|ct| ct.to_str().ok()).map(|s| s.to_string());
     if let Some(s) = ct_val.as_deref() {
         let is_json = s.starts_with("application/json");
         let is_sse = s.starts_with("text/event-stream");
@@ -82,7 +84,8 @@ pub async fn security_headers_middleware(
             let is_js = s.starts_with("application/javascript") || s.starts_with("text/javascript");
             let is_wasm = s.starts_with("application/wasm");
             if is_css || is_js || is_wasm {
-                headers.insert(CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
+                headers
+                    .insert(CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
                 // Remove pragma if previously set by proxies
                 headers.remove(PRAGMA);
             }

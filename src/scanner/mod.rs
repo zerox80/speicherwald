@@ -123,8 +123,10 @@ pub async fn run_scan(
                         code: "metadata_failed".into(),
                         message: "failed to stat root".into(),
                     });
-                    let mut warn_summary = ScanResultSummary::default();
-                    warn_summary.warnings = 1;
+                    let warn_summary = ScanResultSummary {
+                        warnings: 1,
+                        ..Default::default()
+                    };
                     let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                     drop(permit);
                     return;
@@ -166,8 +168,10 @@ pub async fn run_scan(
                                     code: "metadata_failed".into(),
                                     message: "failed to stat".into(),
                                 });
-                                let mut warn_summary = ScanResultSummary::default();
-                                warn_summary.warnings = 1;
+                                let warn_summary = ScanResultSummary {
+                                    warnings: 1,
+                                    ..Default::default()
+                                };
                                 let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                                 continue;
                             }
@@ -237,8 +241,10 @@ pub async fn run_scan(
                         code: "read_dir_failed".into(),
                         message: "failed to read directory".into(),
                     });
-                    let mut warn_summary = ScanResultSummary::default();
-                    warn_summary.warnings = 1;
+                    let warn_summary = ScanResultSummary {
+                        warnings: 1,
+                        ..Default::default()
+                    };
                     let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                 }
             }
@@ -525,7 +531,7 @@ fn scan_dir(
 
                 sent = sent.wrapping_add(1);
                 // Reduzierte Progress-Updates für bessere Performance
-                if sent % 512 == 0 {
+                if sent.is_multiple_of(512) {
                     let _ = tx.send(ScanEvent::Progress {
                         current_path: path.to_string_lossy().to_string(),
                         dirs_scanned: summary.total_dirs + local_dirs,
@@ -610,48 +616,48 @@ fn matches_excludes(path: &Path, set: &GlobSet) -> bool {
     set.is_match(&s)
 }
 
+#[cfg(windows)]
 #[inline]
 fn is_unc_path(path: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        // Detect classic UNC (\\server\share\...), and extended UNC (\\?\UNC\server\share\...)
-        let s = path.as_os_str().to_string_lossy();
-        s.starts_with("\\\\?\\UNC\\") || s.starts_with("\\\\")
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
+    // Detect classic UNC (\\server\share\...), and extended UNC (\\?\UNC\server\share\...)
+    let s = path.as_os_str().to_string_lossy();
+    s.starts_with("\\\\?\\UNC\\") || s.starts_with("\\\\")
 }
 
+#[cfg(not(windows))]
+#[inline]
+fn is_unc_path(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
 #[inline]
 fn is_network_path(path: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        if is_unc_path(path) {
-            return true;
-        }
-        // Detect mapped network drives (e.g., Z:\)
-        let s = path.as_os_str().to_string_lossy();
-        if s.len() >= 2 && s.chars().nth(1) == Some(':') {
-            let drive = s.chars().next().unwrap_or('C');
-            let root = format!("{}:\\", drive);
-            use std::os::windows::ffi::OsStrExt;
-            use windows::core::PCWSTR;
-            use windows::Win32::Storage::FileSystem::GetDriveTypeW;
-            let w: Vec<u16> = std::ffi::OsStr::new(&root).encode_wide().chain(std::iter::once(0)).collect();
-            unsafe {
-                let ty = GetDriveTypeW(PCWSTR(w.as_ptr()));
-                // 4 == DRIVE_REMOTE
-                return ty == 4;
-            }
-        }
-        false
+    if is_unc_path(path) {
+        return true;
     }
-    #[cfg(not(windows))]
-    {
-        false
+    // Detect mapped network drives (e.g., Z:\)
+    let s = path.as_os_str().to_string_lossy();
+    if s.len() >= 2 && s.chars().nth(1) == Some(':') {
+        let drive = s.chars().next().unwrap_or('C');
+        let root = format!("{}:\\", drive);
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+        let w: Vec<u16> = std::ffi::OsStr::new(&root).encode_wide().chain(std::iter::once(0)).collect();
+        unsafe {
+            let ty = GetDriveTypeW(PCWSTR(w.as_ptr()));
+            // 4 == DRIVE_REMOTE
+            return ty == 4;
+        }
     }
+    false
+}
+
+#[cfg(not(windows))]
+#[inline]
+fn is_network_path(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(windows)]

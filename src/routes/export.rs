@@ -65,7 +65,7 @@ pub async fn export_scan(
     }
 
     let requested_limit = query.limit.unwrap_or(10_000);
-    let limit = requested_limit.max(1).min(100_000);
+    let limit = requested_limit.clamp(1, 100_000);
     let scope = query.scope.as_deref().unwrap_or("all");
 
     match query.format.as_str() {

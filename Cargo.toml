@@ -32,7 +32,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7"
 futures = "0.3"
 num_cpus = "1.16"
-config = { version = "0.14", default-features = false, features = ["toml"] }
+config = { version = "0.15", default-features = false, features = ["toml"] }
 dotenvy = "0.15"
 # Cache für Performance-Optimierung
 lru = "0.12"

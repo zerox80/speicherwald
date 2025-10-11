@@ -12,10 +12,6 @@ updates:
       time: "06:00"
       timezone: "Europe/Berlin"
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "rust"
-      - "backend"
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
@@ -79,11 +75,6 @@ updates:
       time: "06:00"
       timezone: "Europe/Berlin"
     open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "rust"
-      - "desktop"
-      - "tauri"
     commit-message:
       prefix: "chore(deps-desktop)"
       include: "scope"
@@ -123,11 +114,6 @@ updates:
       time: "06:00"
       timezone: "Europe/Berlin"
     open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "rust"
-      - "webui"
-      - "wasm"
     commit-message:
       prefix: "chore(deps-ui)"
       include: "scope"
@@ -169,10 +155,6 @@ updates:
       time: "06:00"
       timezone: "Europe/Berlin"
     open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "github-actions"
-      - "ci"
     commit-message:
       prefix: "chore(deps-ci)"
       include: "scope"

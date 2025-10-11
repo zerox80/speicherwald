@@ -1,0 +1,186 @@
+# Dependabot configuration for SpeicherWald
+# Automatically keeps dependencies up-to-date across Rust crates and GitHub Actions
+
+version: 2
+updates:
+  # Main Backend (Rust/Cargo)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "rust"
+      - "backend"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      # Group all patch updates together
+      patch-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+      # Group Axum ecosystem
+      axum-ecosystem:
+        patterns:
+          - "axum*"
+          - "tower*"
+          - "hyper*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group async runtime updates
+      async-runtime:
+        patterns:
+          - "tokio*"
+          - "futures*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group database updates
+      database:
+        patterns:
+          - "sqlx*"
+          - "libsqlite3-sys*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group logging/tracing
+      observability:
+        patterns:
+          - "tracing*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group serialization
+      serialization:
+        patterns:
+          - "serde*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Ignore major version updates for stable dependencies (manual review required)
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # Desktop App (Tauri)
+  - package-ecosystem: "cargo"
+    directory: "/desktop/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+      - "desktop"
+      - "tauri"
+    commit-message:
+      prefix: "chore(deps-desktop)"
+      include: "scope"
+    groups:
+      # Group all patch updates
+      patch-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+      # Group Tauri ecosystem
+      tauri-ecosystem:
+        patterns:
+          - "tauri*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group image processing
+      image-processing:
+        patterns:
+          - "image*"
+          - "ico*"
+          - "base64*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # Web UI (Dioxus/WASM)
+  - package-ecosystem: "cargo"
+    directory: "/webui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+      - "webui"
+      - "wasm"
+    commit-message:
+      prefix: "chore(deps-ui)"
+      include: "scope"
+    groups:
+      # Group all patch updates
+      patch-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+      # Group Dioxus ecosystem
+      dioxus-ecosystem:
+        patterns:
+          - "dioxus*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group WASM tooling
+      wasm-tooling:
+        patterns:
+          - "wasm-bindgen*"
+          - "web-sys*"
+          - "js-sys*"
+          - "reqwasm*"
+          - "gloo*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "ci"
+    commit-message:
+      prefix: "chore(deps-ci)"
+      include: "scope"
+    groups:
+      # Group all GitHub Actions updates
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

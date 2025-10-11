@@ -1,0 +1,91 @@
+name: Weekly Dependency Check
+
+on:
+  schedule:
+    # Run every Monday at 08:00 UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-dependencies:
+    name: Check for Outdated Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo tools
+        run: |
+          cargo install cargo-outdated
+          cargo install cargo-audit
+
+      - name: Check for security vulnerabilities
+        id: audit
+        run: |
+          echo "## Security Audit Results" > audit-report.md
+          echo "" >> audit-report.md
+          echo "### Main Backend" >> audit-report.md
+          cargo audit --json > audit-main.json || true
+          cat audit-main.json >> audit-report.md
+          echo "" >> audit-report.md
+          echo "### Desktop App" >> audit-report.md
+          cd desktop/src-tauri
+          cargo audit --json > audit-desktop.json || true
+          cat audit-desktop.json >> ../../audit-report.md
+          cd ../..
+          echo "" >> audit-report.md
+          echo "### Web UI" >> audit-report.md
+          cd webui
+          cargo audit --json > audit-webui.json || true
+          cat audit-webui.json >> ../audit-report.md
+          cd ..
+
+      - name: Check for outdated dependencies
+        id: outdated
+        run: |
+          echo "## Outdated Dependencies" > outdated-report.md
+          echo "" >> outdated-report.md
+          echo "### Main Backend" >> outdated-report.md
+          cargo outdated --format list >> outdated-report.md || true
+          echo "" >> outdated-report.md
+          echo "### Desktop App" >> outdated-report.md
+          cd desktop/src-tauri
+          cargo outdated --format list >> ../../outdated-report.md || true
+          cd ../..
+          echo "" >> outdated-report.md
+          echo "### Web UI" >> outdated-report.md
+          cd webui
+          cargo outdated --format list >> ../outdated-report.md || true
+          cd ..
+
+      - name: Create issue if vulnerabilities found
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const auditReport = fs.existsSync('audit-report.md') ? fs.readFileSync('audit-report.md', 'utf8') : '';
+            const outdatedReport = fs.existsSync('outdated-report.md') ? fs.readFileSync('outdated-report.md', 'utf8') : '';
+            
+            if (auditReport.includes('vulnerabilities found') || outdatedReport.length > 100) {
+              const body = `# Weekly Dependency Check Report\n\n` +
+                `Generated on: ${new Date().toISOString()}\n\n` +
+                `## Security Audit\n\n${auditReport}\n\n` +
+                `## Outdated Dependencies\n\n${outdatedReport}\n\n` +
+                `---\n*This issue was automatically created by the dependency check workflow.*`;
+              
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🔒 Weekly Dependency Check - ${new Date().toISOString().split('T')[0]}`,
+                body: body,
+                labels: ['dependencies', 'security', 'automated']
+              });
+            }

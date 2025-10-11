@@ -52,7 +52,7 @@ opt-level = 3
 
 [target.'cfg(windows)'.dependencies]
 # Windows-spezifische APIs (GetCompressedFileSizeW, Attribute)
-windows = { version = "0.56", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+windows = { version = "0.62", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

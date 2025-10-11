@@ -9,7 +9,7 @@ minify = "always"
 
 [tools]
 # Ensure we use the stable toolchain unless otherwise configured
-wasm_bindgen = "0.2.101"
+wasm_bindgen = "0.2.104"
 
 # NOTE: Trunk currently expects simple string versions in [tools].
 # The nested tools.wasm_opt table is not supported and causes a parse error.

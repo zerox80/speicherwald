@@ -35,7 +35,7 @@ num_cpus = "1.16"
 config = { version = "0.14", default-features = false, features = ["toml"] }
 dotenvy = "0.15"
 # Cache für Performance-Optimierung
-lru = "0.12"
+lru = "0.16"
 lazy_static = "1.4"
 # Timestamps für Error Handling
 chrono = { version = "0.4", features = ["serde"] }

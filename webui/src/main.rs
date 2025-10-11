@@ -4,6 +4,9 @@ use js_sys::Date;
 use web_sys::console;
 use std::rc::Rc;
 
+fn state_get<T: Clone>(signal: Signal<T>) -> T { signal() }
+fn state_set<T: 'static>(signal: Signal<T>, value: T) { signal.set(value); }
+
 mod api;
 mod types;
 mod ui_utils;
@@ -48,14 +51,14 @@ fn app(cx: Scope) -> Element {
 // ----- Home: einfache Scan-Übersicht -----
 #[component]
 fn Home(cx: Scope) -> Element {
-    let scans = use_state(cx, || Vec::<types::ScanSummary>::new());
-    let new_root = use_state(cx, || String::new());
-    let server_ok = use_state(cx, || None as Option<bool>);
-    let drives = use_state(cx, || Vec::<types::DriveInfo>::new());
-    let home_loading = use_state(cx, || true);
-    let err_scans = use_state(cx, || None as Option<String>);
-    let err_drives = use_state(cx, || None as Option<String>);
-    let err_health = use_state(cx, || None as Option<String>);
+    let scans = use_signal(|| Vec::<types::ScanSummary>::new());
+    let new_root = use_signal(|| String::new());
+    let server_ok = use_signal(|| None as Option<bool>);
+    let drives = use_signal(|| Vec::<types::DriveInfo>::new());
+    let home_loading = use_signal(|| true);
+    let err_scans = use_signal(|| None as Option<String>);
+    let err_drives = use_signal(|| None as Option<String>);
+    let err_health = use_signal(|| None as Option<String>);
 
     // initial laden
     {
@@ -66,12 +69,21 @@ fn Home(cx: Scope) -> Element {
         let e_scans = err_scans.clone();
         let e_drives = err_drives.clone();
         let e_health = err_health.clone();
-        use_effect(cx, (), move |_| async move {
+        use_effect(move || {
             loading.set(true);
-            match api::list_scans().await { Ok(list) => { scans.set(list); e_scans.set(None); }, Err(e) => e_scans.set(Some(e)) }
-            match api::list_drives().await { Ok(dr) => { drives_state.set(dr.items); e_drives.set(None); }, Err(e) => e_drives.set(Some(e)) }
-            match api::healthz().await { Ok(ok) => { server_state.set(Some(ok)); e_health.set(None); }, Err(e) => e_health.set(Some(e)) }
-            loading.set(false);
+            let scans = scans.clone();
+            let e_scans = e_scans.clone();
+            let drives_state = drives_state.clone();
+            let e_drives = e_drives.clone();
+            let server_state = server_state.clone();
+            let e_health = e_health.clone();
+            let loading_done = loading.clone();
+            spawn(async move {
+                match api::list_scans().await { Ok(list) => { scans.set(list); e_scans.set(None); }, Err(e) => e_scans.set(Some(e)) }
+                match api::list_drives().await { Ok(dr) => { drives_state.set(dr.items); e_drives.set(None); }, Err(e) => e_drives.set(Some(e)) }
+                match api::healthz().await { Ok(ok) => { server_state.set(Some(ok)); e_health.set(None); }, Err(e) => e_health.set(Some(e)) }
+                loading_done.set(false);
+            });
         });
     }
 
@@ -110,7 +122,7 @@ fn Home(cx: Scope) -> Element {
     let start_scan = {
         let root = new_root.clone();
         move |_| {
-            let root_val = root.get().trim().to_string();
+            let root_val = root.read().trim().to_string();
             if root_val.is_empty() { return; }
             let nav = nav.clone();
             wasm_bindgen_futures::spawn_local(async move {
@@ -132,7 +144,7 @@ fn Home(cx: Scope) -> Element {
     };
 
     // vorab: Texte für Dashboard
-    let server_text = match *server_ok.get() { Some(true) => "OK", Some(false) => "Fehler", None => "..." };
+    let server_text = match *server_ok.read() { Some(true) => "OK", Some(false) => "Fehler", None => "..." };
 
     cx.render(rsx! {
         section { class: "panel",
@@ -140,18 +152,18 @@ fn Home(cx: Scope) -> Element {
             // Dashboard: Server-Status & Laufwerke
             div { class: "toolbar", style: "margin-top:6px;",
                 span { "Server: {server_text}" }
-                span { "Laufwerke: {drives.get().len()}" }
-                { (*home_loading.get()).then(|| rsx!(span { class: "spinner", "" })) }
+                span { "Laufwerke: {drives.read().len()}" }
+                { (*home_loading.read()).then(|| rsx!(span { class: "spinner", "" })) }
                 button { class: "btn", onclick: reload_drives, "Laufwerke aktualisieren" }
             }
-            { err_health.get().as_ref().map(|e| rsx!(div { class: "alert alert-error", "Health-Fehler: {e}" })) }
-            { err_drives.get().as_ref().map(|e| rsx!(div { class: "alert alert-error", "Laufwerke-Fehler: {e}" })) }
-            { err_scans.get().as_ref().map(|e| rsx!(div { class: "alert alert-error", "Scans-Fehler: {e}" })) }
+            { err_health.read().as_ref().map(|e| rsx!(div { class: "alert alert-error", "Health-Fehler: {e}" })) }
+            { err_drives.read().as_ref().map(|e| rsx!(div { class: "alert alert-error", "Laufwerke-Fehler: {e}" })) }
+            { err_scans.read().as_ref().map(|e| rsx!(div { class: "alert alert-error", "Scans-Fehler: {e}" })) }
             // Laufwerks-Übersicht
             details { open: true,
                 summary { "Laufwerke (Übersicht)" }
                 div { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px;margin-top:8px;",
-                    { drives.get().iter().map(|d| {
+                    { drives.read().iter().map(|d| {
                         let path = d.path.clone();
                         let used = d.total_bytes.saturating_sub(d.free_bytes);
                         let percent = if d.total_bytes > 0 { (used as f64) / (d.total_bytes as f64) * 100.0 } else { 0.0 };
@@ -192,15 +204,15 @@ fn Home(cx: Scope) -> Element {
             }
             div { class: "input-group",
                 input { class: "form-control", value: "{new_root}", placeholder: "Root-Pfad (z. B. C:\\ oder \\server\\share)",
-                    oninput: move |e| new_root.set(e.value.clone()) }
+                    oninput: move |e| new_root.set(e.value().clone()) }
                 div { class: "input-group-append",
                     button { class: "btn btn-primary", onclick: start_scan, "Scan starten" }
                     button { class: "btn", onclick: reload, "Aktualisieren" }
                 }
             }
             ul { class: "list-unstyled",
-                { (scans.get().is_empty() && !*home_loading.get()).then(|| rsx!(li { class: "text-muted", "Noch keine Scans." })) }
-                { scans.get().iter().map(|s| {
+                { (scans.read().is_empty() && !*home_loading.read()).then(|| rsx!(li { class: "text-muted", "Noch keine Scans." })) }
+                { scans.read().iter().map(|s| {
                     let id = s.id.clone();
                     rsx!{ li { style: "margin:6px 0;",
                         Link { to: Route::Scan { id: id.clone() },
@@ -216,55 +228,55 @@ fn Home(cx: Scope) -> Element {
 #[component]
 fn Scan(cx: Scope, id: String) -> Element {
     // KPI/Meta und Log
-    let kpi = use_state(cx, || None as Option<types::ScanSummary>);
-    let log = use_state(cx, || String::new());
+    let kpi = use_signal(|| None as Option<types::ScanSummary>);
+    let log = use_signal(|| String::new());
 
     // EventSource-Handle, damit die Verbindung lebt
-    let es_ref = use_ref(cx, || None as Option<web_sys::EventSource>);
+    let es_ref = use_signal(|| None as Option<web_sys::EventSource>);
 
     // Tabellenzustände
-    let tree_items = use_state(cx, || Vec::<types::NodeDto>::new());
-    let top_items = use_state(cx, || Vec::<types::TopItem>::new());
-    let list_items = use_state(cx, || Vec::<types::ListItem>::new());
-    let err_tree = use_state(cx, || None as Option<String>);
-    let err_top = use_state(cx, || None as Option<String>);
-    let err_list = use_state(cx, || None as Option<String>);
-    let loading_tree = use_state(cx, || false);
-    let loading_list = use_state(cx, || false);
+    let tree_items = use_signal(|| Vec::<types::NodeDto>::new());
+    let top_items = use_signal(|| Vec::<types::TopItem>::new());
+    let list_items = use_signal(|| Vec::<types::ListItem>::new());
+    let err_tree = use_signal(|| None as Option<String>);
+    let err_top = use_signal(|| None as Option<String>);
+    let err_list = use_signal(|| None as Option<String>);
+    let loading_tree = use_signal(|| false);
+    let loading_list = use_signal(|| false);
 
     // Steuerung für Baum/Top
-    let tree_path = use_state(cx, || None as Option<String>);
-    let tree_depth = use_state(cx, || 3_i64);
-    let tree_limit = use_state(cx, || 200_i64);
-    let tree_sort = use_state(cx, || "size".to_string()); // server hint: "size" | "name"
+    let tree_path = use_signal(|| None as Option<String>);
+    let tree_depth = use_signal(|| 3_i64);
+    let tree_limit = use_signal(|| 200_i64);
+    let tree_sort = use_signal(|| "size".to_string()); // server hint: "size" | "name"
     // Client-side sort controls for Tree table
-    let tree_sort_view = use_state(cx, || "allocated".to_string()); // allocated|logical|name|type|accessed
-    let tree_order = use_state(cx, || "desc".to_string());
-    let top_scope = use_state(cx, || "dirs".to_string()); // "dirs" | "files"
-    let top_show = use_state(cx, || 15_usize);
+    let tree_sort_view = use_signal(|| "allocated".to_string()); // allocated|logical|name|type|accessed
+    let tree_order = use_signal(|| "desc".to_string());
+    let top_scope = use_signal(|| "dirs".to_string()); // "dirs" | "files"
+    let top_show = use_signal(|| 15_usize);
     // Client-side sort controls for Top table
-    let top_sort = use_state(cx, || "allocated".to_string()); // allocated|logical|name|type|accessed
-    let top_order = use_state(cx, || "desc".to_string());
+    let top_sort = use_signal(|| "allocated".to_string()); // allocated|logical|name|type|accessed
+    let top_order = use_signal(|| "desc".to_string());
     // Explorer (Liste) Steuerung
-    let list_path = use_state(cx, || None as Option<String>);
-    let list_sort = use_state(cx, || "allocated".to_string());
-    let list_order = use_state(cx, || "desc".to_string());
+    let list_path = use_signal(|| None as Option<String>);
+    let list_sort = use_signal(|| "allocated".to_string());
+    let list_order = use_signal(|| "desc".to_string());
     // Default page size reduced for better paging experience
-    let list_limit = use_state(cx, || 50_i64);
-    let list_offset = use_state(cx, || 0_i64);
+    let list_limit = use_signal(|| 50_i64);
+    let list_offset = use_signal(|| 0_i64);
     // Pagination helper: track if another next page likely exists (based on last page size)
-    let list_has_more = use_state(cx, || true);
+    let list_has_more = use_signal(|| true);
     // Sequence ID to drop stale responses when multiple requests overlap
-    let list_req_id = use_ref(cx, || 0_i64);
-    
+    let list_req_id = use_signal(|| 0_i64);
+
     // Filter und Suche
-    let search_query = use_state(cx, || String::new());
-    let min_size_filter = use_state(cx, || 0_i64);
-    let file_type_filter = use_state(cx, || "all".to_string());
-    let show_hidden = use_state(cx, || false);
-    
+    let search_query = use_signal(|| String::new());
+    let min_size_filter = use_signal(|| 0_i64);
+    let file_type_filter = use_signal(|| "all".to_string());
+    let show_hidden = use_signal(|| false);
+
     // Navigation History für Breadcrumbs
-    let nav_history = use_state(cx, || Vec::<String>::new());
+    let nav_history = use_signal(|| Vec::<String>::new());
 
     // Ensure pagination starts from 0 whenever the path changes
     {

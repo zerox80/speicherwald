@@ -1932,37 +1932,138 @@ fn move_dialog_view(
     let is_done = dialog.done;
     let is_running = dialog.in_progress;
     let destination_blank = dialog.destination.trim().is_empty();
+
     let transfer_size_txt = fmt_bytes(dialog.allocated_size);
+    let logical_size_txt = fmt_bytes(dialog.logical_size);
     let estimated_gain_txt = if dialog.remove_source {
         fmt_bytes(dialog.allocated_size)
     } else {
         "0 B".to_string()
     };
 
+    let selected_drive_txt = dialog
+        .selected_drive
+        .clone()
+        .unwrap_or_else(|| "Manuelle Eingabe".to_string());
+    let source_name_display = if dialog.source_name.trim().is_empty() {
+        "Ausgewaehlter Pfad".to_string()
+    } else {
+        dialog.source_name.clone()
+    };
+    let source_path_clip = dialog.source_path.clone();
+    let quick_drive_hint = if dialog.selected_drive.is_some() {
+        "Schnellwahl aktiv"
+    } else {
+        "Optional: Laufwerk fuer Schnellwahl auswaehlen"
+    };
+
+    let (status_label, status_grad_start, status_grad_end, status_border, status_text) = if is_done {
+        ("Abgeschlossen", "#0f3b2a", "#166534", "#22c55e", "#bbf7d0")
+    } else if is_running {
+        ("Aktiv", "#0f3a58", "#1d4ed8", "#38bdf8", "#dbeafe")
+    } else {
+        ("Bereit", "#1e293b", "#101827", "#4b5563", "#e5e7eb")
+    };
+    let status_chip_style = format!(
+        "background:linear-gradient(135deg, {} 0%, {} 100%);color:{};border:1px solid {};border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;box-shadow:0 10px 24px rgba(15,23,42,0.45);",
+        status_grad_start, status_grad_end, status_text, status_border
+    );
+
     rsx! {
-        div { style: "position:fixed;top:0;left:0;width:100vw;height:100vh;padding:16px;display:flex;align-items:center;justify-content:center;background:rgba(6,10,18,0.78);backdrop-filter:blur(2px);z-index:2000;",
-            div { style: "background:#0f1117;border:1px solid #1f2937;border-radius:16px;padding:24px;max-width:640px;width:100%;color:#e5e7eb;box-shadow:0 18px 34px rgba(0,0,0,0.45);display:flex;flex-direction:column;gap:16px;max-height:90vh;overflow:auto;",
-                div { style: "display:flex;justify-content:space-between;align-items:center;gap:12px;",
-                    h3 { style: "margin:0;font-size:20px;", "Pfad verschieben" }
-                    button { class: "btn", onclick: {
+        div { style: "position:fixed;top:0;left:0;width:100vw;height:100vh;padding:24px;display:flex;align-items:center;justify-content:center;background:rgba(7,11,20,0.82);backdrop-filter:blur(6px) brightness(0.92);z-index:2000;",
+            div { style: "background:linear-gradient(150deg,#0b111c 0%,#111b2b 60%,#0c1626 100%);border:1px solid #1f2a3d;border-radius:20px;padding:28px;max-width:720px;width:100%;color:#e5e7eb;box-shadow:0 28px 46px rgba(3,7,18,0.55);display:flex;flex-direction:column;gap:20px;max-height:92vh;overflow:auto;",
+                div { style: "display:flex;justify-content:space-between;gap:18px;align-items:flex-start;",
+                    div { style: "display:flex;flex-direction:column;gap:10px;",
+                        span { style: "{status_chip_style}", "{status_label}" }
+                        h3 { style: "margin:0;font-size:22px;font-weight:600;color:#fafafa;", "Pfad verschieben" }
+                        span { style: "color:#94a3b8;font-size:13px;", "Waehle ein Ziel und starte den Transfer." }
+                    }
+                    button {
+                        class: "btn",
+                        style: "background:transparent;border:1px solid #2d3445;color:#cbd5f5;border-radius:10px;padding:8px 14px;font-size:13px;letter-spacing:0.04em;text-transform:uppercase;",
+                        onclick: {
                             let close_signal = move_signal.clone();
                             move |_| {
                                 let mut signal = close_signal.clone();
                                 signal.set(None);
                             }
-                        }, "Schliessen" }
+                        },
+                        "Schliessen"
+                    }
+                }
+                div { style: "display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));",
+                    div { style: "background:rgba(17,25,38,0.9);border:1px solid #253246;border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:8px;",
+                        span { style: "color:#64748b;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;", "Quelle" }
+                        span { style: "font-size:16px;font-weight:600;color:#e2e8f0;", "{source_name_display}" }
+                        div { style: "display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;",
+                            code { style: "flex:1;font-size:12px;background:#101828;border:1px solid #1f2937;border-radius:8px;padding:8px;word-break:break-all;color:#cbd5f5;", "{dialog.source_path}" }
+                            button {
+                                class: "btn",
+                                style: "background:#1f2937;border:1px solid #334155;color:#93c5fd;border-radius:8px;padding:6px 10px;font-size:12px;",
+                                onclick: move |_| {
+                                    copy_to_clipboard(source_path_clip.clone());
+                                    show_toast("Pfad kopiert");
+                                },
+                                "Kopieren"
+                            }
+                        }
+                        span { style: "color:#6b7280;font-size:12px;", "Logisch: {logical_size_txt} | Belegt: {transfer_size_txt}" }
+                    }
+                    div { style: "background:rgba(17,25,38,0.9);border:1px solid #253246;border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:8px;",
+                        span { style: "color:#64748b;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;", "Schnellwahl Laufwerk" }
+                        span { style: "font-size:16px;font-weight:600;color:#e2e8f0;", "{selected_drive_txt}" }
+                        span { style: "color:#6b7280;font-size:12px;", "{quick_drive_hint}" }
+                        { (!drives_snapshot.is_empty()).then(|| rsx!{
+                            div { style: "display:flex;flex-wrap:wrap;gap:10px;",
+                                { drives_snapshot.iter().map(|drive| {
+                                    let drive_path = drive.path.clone();
+                                    let free_fmt = fmt_bytes((drive.free_bytes.min(i64::MAX as u64)) as i64);
+                                    let is_selected = dialog.selected_drive.as_ref().map(|p| p == &drive_path).unwrap_or(false);
+                                    let button_style = if is_selected {
+                                        "background:linear-gradient(140deg,#1d4fd8 0%,#2563eb 100%);color:#fff;border:1px solid #4b9fff;border-radius:10px;padding:8px 12px;cursor:pointer;box-shadow:0 12px 24px rgba(37,99,235,0.35);transition:all 0.2s ease;"
+                                    } else {
+                                        "background:rgba(17,24,39,0.85);color:#e5e7eb;border:1px solid #2e3a4f;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all 0.2s ease;"
+                                    };
+                                    let move_signal_drive = move_signal.clone();
+                                    let dialog_snapshot = dialog.clone();
+                                    let dest_suggestion = if drive_path.ends_with('\\') || drive_path.ends_with('/') {
+                                        format!("{}{}", drive_path, dialog_snapshot.source_name)
+                                    } else {
+                                        format!("{}\\{}", drive_path, dialog_snapshot.source_name)
+                                    };
+                                    rsx!{
+                                        button { style: "{button_style}", onclick: move |_| {
+                                                let mut next = dialog_snapshot.clone();
+                                                let previously_selected = next.selected_drive.clone();
+                                                next.selected_drive = Some(drive_path.clone());
+                                                if next.destination.trim().is_empty() || previously_selected.as_ref() != Some(&drive_path) {
+                                                    next.destination = dest_suggestion.clone();
+                                                }
+                                                next.error = None;
+                                                let mut signal = move_signal_drive.clone();
+                                                signal.set(Some(next));
+                                            }, "{drive_path} - frei: {free_fmt}" }
+                                    }
+                                }) }
+                            }
+                        }) }
+                        { (drives_snapshot.is_empty()).then(|| rsx!{
+                            span { style: "color:#64748b;font-size:12px;", "Keine Laufwerke verfuegbar." }
+                        }) }
+                        { drive_error_val.as_ref().map(|err| rsx!{
+                            div { style: "margin-top:4px;padding:8px;background:#331414;border:1px solid #7f1d1d;border-radius:8px;color:#fca5a5;font-size:12px;",
+                                "Laufwerke konnten nicht aktualisiert werden: {err}"
+                            }
+                        }) }
+                    }
                 }
                 div { style: "display:flex;flex-direction:column;gap:6px;",
-                    span { style: "color:#9aa0a6;font-size:13px;", "Quelle" }
-                    code { style: "font-size:13px;background:#111827;border:1px solid #1f2937;border-radius:6px;padding:6px;word-break:break-all;", "{dialog.source_path}" }
-                }
-                div { style: "display:flex;flex-direction:column;gap:6px;",
-                    span { style: "color:#9aa0a6;font-size:13px;", "Ziel" }
+                    span { style: "color:#64748b;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;", "Ziel" }
                     input {
                         class: "form-control",
                         value: "{dialog.destination}",
                         placeholder: "\\\\server\\share\\ordner",
-                        style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px;",
+                        style: "background:#101828;color:#e5e7eb;border:1px solid #2e3a4f;border-radius:10px;padding:10px;font-size:14px;",
                         oninput: {
                             let move_signal_dest = move_signal.clone();
                             let snapshot = dialog.clone();
@@ -1975,95 +2076,79 @@ fn move_dialog_view(
                             }
                         }
                     }
-                    span { style: "color:#6b7280;font-size:12px;", "Tipp: Waehle ein Laufwerk oder trage einen UNC Pfad ein." }
+                    span { style: "color:#6b7280;font-size:12px;", "Tipp: Trage einen UNC Pfad ein oder nutze die Schnellwahl." }
                 }
-                { (!drives_snapshot.is_empty()).then(|| rsx!{
-                    div { style: "display:flex;flex-direction:column;gap:6px;",
-                        span { style: "color:#9aa0a6;font-size:13px;", "Schnellwahl Laufwerk" }
-                        div { style: "display:flex;flex-wrap:wrap;gap:8px;",
-                            { drives_snapshot.iter().map(|drive| {
-                                let drive_path = drive.path.clone();
-                                let free_fmt = fmt_bytes((drive.free_bytes.min(i64::MAX as u64)) as i64);
-                                let is_selected = dialog.selected_drive.as_ref().map(|p| p == &drive_path).unwrap_or(false);
-                                let button_style = if is_selected {
-                                    "background:#2563eb;color:#fff;border:1px solid #60a5fa;border-radius:6px;padding:6px 10px;cursor:pointer;"
-                                } else {
-                                    "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:6px 10px;cursor:pointer;"
-                                };
-                                let move_signal_drive = move_signal.clone();
-                                let dialog_snapshot = dialog.clone();
-                                let dest_suggestion = if drive_path.ends_with('\\') || drive_path.ends_with('/') {
-                                    format!("{}{}", drive_path, dialog_snapshot.source_name)
-                                } else {
-                                    format!("{}\\{}", drive_path, dialog_snapshot.source_name)
-                                };
-                                rsx!{
-                                    button { style: "{button_style}", onclick: move |_| {
-                                            let mut next = dialog_snapshot.clone();
-                                            let previously_selected = next.selected_drive.clone();
-                                            next.selected_drive = Some(drive_path.clone());
-                                            if next.destination.trim().is_empty() || previously_selected.as_ref() != Some(&drive_path) {
-                                                next.destination = dest_suggestion.clone();
+                div { style: "display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));",
+                    div { style: "background:#121c2b;border:1px solid #203049;border-radius:14px;padding:14px;display:flex;gap:8px;align-items:flex-start;",
+                        div { style: "flex:1;display:flex;flex-direction:column;gap:6px;",
+                            span { style: "color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;", "Aktionen" }
+                            div { style: "display:flex;flex-direction:column;gap:10px;",
+                                label { style: "display:flex;gap:10px;align-items:flex-start;background:#152135;border:1px solid #233146;border-radius:10px;padding:10px;",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: dialog.remove_source,
+                                        oninput: {
+                                            let move_signal_remove = move_signal.clone();
+                                            let snapshot = dialog.clone();
+                                            move |_| {
+                                                let mut next = snapshot.clone();
+                                                next.remove_source = !snapshot.remove_source;
+                                                next.error = None;
+                                                let mut signal = move_signal_remove.clone();
+                                                signal.set(Some(next));
                                             }
-                                            next.error = None;
-                                            let mut signal = move_signal_drive.clone();
-                                            signal.set(Some(next));
-                                        }, "{drive_path} (frei: {free_fmt})" }
+                                        }
+                                    }
+                                    div { style: "display:flex;flex-direction:column;gap:2px;",
+                                        span { style: "font-size:13px;font-weight:600;color:#e2e8f0;", "Quelle nach Abschluss loeschen" }
+                                        span { style: "font-size:12px;color:#94a3b8;", "Erhoeht den freigegebenen Speicher um {estimated_gain_txt}." }
+                                    }
                                 }
-                            }) }
-                        }
-                    }
-                }) }
-                { drive_error_val.as_ref().map(|err| rsx!{
-                    div { style: "padding:10px;background:#331414;border:1px solid #7f1d1d;border-radius:8px;color:#fca5a5;font-size:13px;",
-                        "Laufwerke konnten nicht aktualisiert werden: {err}"
-                    }
-                }) }
-                div { style: "display:flex;flex-direction:column;gap:8px;",
-                    label { style: "display:flex;gap:8px;align-items:center;",
-                        input {
-                            r#type: "checkbox",
-                            checked: dialog.remove_source,
-                            oninput: {
-                                let move_signal_remove = move_signal.clone();
-                                let snapshot = dialog.clone();
-                                move |_| {
-                                    let mut next = snapshot.clone();
-                                    next.remove_source = !snapshot.remove_source;
-                                    next.error = None;
-                                    let mut signal = move_signal_remove.clone();
-                                    signal.set(Some(next));
-                                }
-                            }
-                        }
-                        span { "Quelle nach Abschluss loeschen" }
-                    }
-                    label { style: "display:flex;gap:8px;align-items:center;",
-                        input {
-                            r#type: "checkbox",
-                            checked: dialog.overwrite,
-                            oninput: {
-                                let move_signal_overwrite = move_signal.clone();
-                                let snapshot = dialog.clone();
-                                move |_| {
-                                    let mut next = snapshot.clone();
-                                    next.overwrite = !snapshot.overwrite;
-                                    next.error = None;
-                                    let mut signal = move_signal_overwrite.clone();
-                                    signal.set(Some(next));
+                                label { style: "display:flex;gap:10px;align-items:flex-start;background:#152135;border:1px solid #233146;border-radius:10px;padding:10px;",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: dialog.overwrite,
+                                        oninput: {
+                                            let move_signal_overwrite = move_signal.clone();
+                                            let snapshot = dialog.clone();
+                                            move |_| {
+                                                let mut next = snapshot.clone();
+                                                next.overwrite = !snapshot.overwrite;
+                                                next.error = None;
+                                                let mut signal = move_signal_overwrite.clone();
+                                                signal.set(Some(next));
+                                            }
+                                        }
+                                    }
+                                    div { style: "display:flex;flex-direction:column;gap:2px;",
+                                        span { style: "font-size:13px;font-weight:600;color:#e2e8f0;", "Vorhandene Dateien ueberschreiben" }
+                                        span { style: "font-size:12px;color:#94a3b8;", "Ersetzt Zielkonflikte automatisch." }
+                                    }
                                 }
                             }
                         }
-                        span { "Vorhandene Dateien am Ziel ueberschreiben" }
                     }
-                }
-                div { style: "background:#11131c;border:1px solid #1f2533;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px;font-size:13px;",
-                    span { "Transfer: {transfer_size_txt}" }
-                    span { "Geschaetzter Platzgewinn: {estimated_gain_txt}" }
+                    div { style: "background:#121c2b;border:1px solid #203049;border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:8px;font-size:13px;",
+                        span { style: "color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;", "Zusammenfassung" }
+                        div { style: "display:flex;flex-direction:column;gap:8px;",
+                            span { style: "display:flex;justify-content:space-between;gap:12px;",
+                                span { style: "color:#6b7280;", "Transfermenge" }
+                                span { style: "color:#f8fafc;font-weight:600;", "{transfer_size_txt}" }
+                            }
+                            span { style: "display:flex;justify-content:space-between;gap:12px;",
+                                span { style: "color:#6b7280;", "Logischer Umfang" }
+                                span { style: "color:#f8fafc;font-weight:600;", "{logical_size_txt}" }
+                            }
+                            span { style: "display:flex;justify-content:space-between;gap:12px;",
+                                span { style: "color:#6b7280;", "Freier Speicher" }
+                                span { style: "color:#34d399;font-weight:600;", "{estimated_gain_txt}" }
+                            }
+                        }
+                    }
                 }
                 { if is_running {
                     Some(rsx!{
-                        div { style: "display:flex;gap:8px;align-items:center;color:#60a5fa;font-size:13px;",
+                        div { style: "display:flex;gap:10px;align-items:center;color:#60a5fa;font-size:13px;padding:10px 12px;border-radius:12px;background:rgba(37,99,235,0.12);border:1px solid rgba(96,165,250,0.35);",
                             span { class: "spinner" }
                             span { "Verschiebe Daten ..." }
                         }
@@ -2072,7 +2157,7 @@ fn move_dialog_view(
                     None
                 } }
                 { dialog.error.as_ref().map(|err| rsx!{
-                    div { style: "padding:10px;background:#331414;border:1px solid #7f1d1d;border-radius:8px;color:#fca5a5;font-size:13px;",
+                    div { style: "padding:12px;background:#331414;border:1px solid #7f1d1d;border-radius:10px;color:#fca5a5;font-size:13px;",
                         "Fehler: {err}"
                     }
                 }) }
@@ -2084,8 +2169,8 @@ fn move_dialog_view(
                     let duration_txt = format!("{:.1} s", duration_sec);
                     let warnings = res.warnings.clone();
                     rsx!{
-                        div { style: "padding:12px;background:#172031;border:1px solid #22304b;border-radius:10px;display:flex;flex-direction:column;gap:6px;font-size:13px;",
-                            span { style: "color:#60a5fa;", "Status: {res.status}" }
+                        div { style: "padding:14px;background:#172031;border:1px solid #22304b;border-radius:12px;display:flex;flex-direction:column;gap:8px;font-size:13px;",
+                            span { style: "color:#93c5fd;font-weight:600;", "Status: {res.status}" }
                             span { "Daten verschoben: {moved_fmt} von {total_fmt}" }
                             span { "Freier Speicher: {freed_fmt}" }
                             span { "Dauer: {duration_txt}" }
@@ -2103,10 +2188,10 @@ fn move_dialog_view(
                     }
                 }) }
                 span { style: "color:#6b7280;font-size:12px;", "Hinweis: Tabellen aktualisieren sich nach einem neuen Scan." }
-                div { style: "display:flex;justify-content:flex-end;gap:12px;margin-top:4px;",
+                div { style: "display:flex;justify-content:flex-end;gap:12px;margin-top:4px;flex-wrap:wrap;",
                     button {
                         class: "btn",
-                        style: btn_style(),
+                        style: "background:transparent;border:1px solid #2d3445;color:#cbd5f5;border-radius:10px;padding:8px 14px;font-size:13px;letter-spacing:0.04em;text-transform:uppercase;",
                         disabled: is_running,
                         onclick: {
                             let close_signal = move_signal.clone();

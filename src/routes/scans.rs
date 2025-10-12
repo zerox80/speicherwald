@@ -446,6 +446,7 @@ async fn get_atime_secs(path: &str) -> Option<i64> {
 }
 
 const LIKE_ESCAPE: char = '!';
+const TREE_LIMIT_MAX: i64 = 5000;
 
 fn escape_like_pattern(p: &str) -> String {
     let mut out = String::with_capacity(p.len());
@@ -552,8 +553,8 @@ pub async fn get_tree(
         Some("name") => qb.push(" ORDER BY path ASC"),
         _ => qb.push(" ORDER BY allocated_size DESC"),
     };
-    // Clamp limit to a safe range to prevent overly large responses
-    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    // Clamp limit to a safe range to prevent overly large responses while allowing larger exports for power users
+    let limit = q.limit.unwrap_or(200).clamp(1, TREE_LIMIT_MAX);
     qb.push(" LIMIT ").push_bind(limit);
 
     let rows = qb.build().fetch_all(&state.db).await?;

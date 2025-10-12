@@ -389,6 +389,20 @@ async fn get_subtree_totals(
     root: &str,
     db: &sqlx::SqlitePool,
 ) -> Result<(i64, i64), sqlx::Error> {
+    if let Some(row) = sqlx::query(
+        "SELECT file_count, dir_count FROM nodes WHERE scan_id = ?1 AND path = ?2 LIMIT 1",
+    )
+    .bind(scan_id.to_string())
+    .bind(root)
+    .fetch_optional(db)
+    .await?
+    {
+        let total_files: i64 = row.try_get("file_count").unwrap_or(0);
+        let total_dirs: i64 = row.try_get("dir_count").unwrap_or(0);
+        return Ok((total_files, total_dirs));
+    }
+
+    // Fallback: derive counts from persisted rows without double-counting directory aggregates.
     let mut prefix = root.to_string();
     if !prefix.ends_with('/') && !prefix.ends_with('\\') {
         prefix.push(if prefix.contains('\\') { '\\' } else { '/' });
@@ -396,22 +410,33 @@ async fn get_subtree_totals(
     let escaped_prefix = escape_like_pattern(&prefix);
     let pattern = format!("{}%", escaped_prefix);
 
-    let row = sqlx::query(
-        "SELECT \
-            COALESCE(SUM(file_count), 0) AS total_files, \
-            COALESCE(SUM(CASE WHEN path = ?1 THEN 0 ELSE 1 END), 0) AS total_dirs \
-         FROM nodes \
-         WHERE scan_id = ?2 \
-           AND (path = ?1 OR path LIKE ?3 ESCAPE '!')",
+    let files_row = sqlx::query(
+        "SELECT COUNT(*) AS total_files \
+         FROM files \
+         WHERE scan_id = ?1 \
+           AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
     )
-    .bind(root)
     .bind(scan_id.to_string())
-    .bind(pattern)
+    .bind(root)
+    .bind(&pattern)
     .fetch_one(db)
     .await?;
 
-    let total_files: i64 = row.try_get("total_files").unwrap_or(0);
-    let total_dirs: i64 = row.try_get("total_dirs").unwrap_or(0);
+    let dirs_row = sqlx::query(
+        "SELECT COUNT(*) AS total_dirs \
+         FROM nodes \
+         WHERE scan_id = ?1 \
+           AND path LIKE ?2 ESCAPE '!' \
+           AND path <> ?3",
+    )
+    .bind(scan_id.to_string())
+    .bind(&pattern)
+    .bind(root)
+    .fetch_one(db)
+    .await?;
+
+    let total_files: i64 = files_row.try_get("total_files").unwrap_or(0);
+    let total_dirs: i64 = dirs_row.try_get("total_dirs").unwrap_or(0);
     Ok((total_files, total_dirs))
 }
 
@@ -681,14 +706,16 @@ pub async fn get_list(
             if let Ok(roots) = serde_json::from_str::<Vec<String>>(&r.get::<String, _>("root_paths")) {
                 // fetch nodes for these paths to get sizes/counts
                 for root in roots {
-                    let root_clone = root.clone();
-                    let (total_files, total_dirs) = get_subtree_totals(id, &root_clone, &state.db).await?;
+                    let original_root = root.clone();
+                    let normalized_root = normalize_query_path(&original_root);
+                    let (total_files, total_dirs) =
+                        get_subtree_totals(id, &normalized_root, &state.db).await?;
 
                     let node_stats = sqlx::query(
                         "SELECT logical_size, allocated_size, mtime, atime FROM nodes WHERE scan_id = ?1 AND path = ?2 LIMIT 1",
                     )
                     .bind(id.to_string())
-                    .bind(&root_clone)
+                    .bind(&normalized_root)
                     .fetch_optional(&state.db)
                     .await?;
 
@@ -705,22 +732,22 @@ pub async fn get_list(
 
                     let mtime = match db_mtime {
                         Some(ts) => Some(ts),
-                        None => get_mtime_secs(&root).await,
+                        None => get_mtime_secs(&normalized_root).await,
                     };
                     let atime = match db_atime {
                         Some(ts) => Some(ts),
-                        None => get_atime_secs(&root).await,
+                        None => get_atime_secs(&normalized_root).await,
                     };
 
-                    let name = std::path::Path::new(&root)
+                    let name = std::path::Path::new(&normalized_root)
                         .file_name()
                         .and_then(|s| s.to_str())
                         .map(|s| s.to_string())
-                        .unwrap_or_else(|| root.clone());
+                        .unwrap_or_else(|| original_root.clone());
 
                     items.push(ListItem::Dir {
                         name,
-                        path: root,
+                        path: normalized_root,
                         parent_path: None,
                         depth: 0,
                         logical_size,

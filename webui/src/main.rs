@@ -319,6 +319,7 @@ fn Scan(id: String) -> Element {
     // Filter und Suche
     let search_query = use_signal(|| String::new());
     let min_size_filter = use_signal(|| 0_i64);
+    let min_size_unit = use_signal(|| "b".to_string());
     let file_type_filter = use_signal(|| "all".to_string());
     let show_hidden = use_signal(|| false);
 
@@ -506,14 +507,22 @@ fn Scan(id: String) -> Element {
                     offset: Some(offset),
                 };
 
-                if let Ok(list) = api::get_list(&id, &lq).await {
-                    let has_more = (list.len() as i64) > limit;
-                    let items_page: Vec<types::ListItem> = list.into_iter().take(limit as usize).collect();
-                    *list_has_more.write() = has_more;
-                    *list_items.write() = items_page;
-                    *err_list.write() = None;
-                    *loading_list.write() = false;
+                match api::get_list(&id, &lq).await {
+                    Ok(list) => {
+                        let has_more = (list.len() as i64) > limit;
+                        let items_page: Vec<types::ListItem> =
+                            list.into_iter().take(limit as usize).collect();
+                        *list_has_more.write() = has_more;
+                        *list_items.write() = items_page;
+                        *err_list.write() = None;
+                    }
+                    Err(e) => {
+                        *list_has_more.write() = false;
+                        *list_items.write() = Vec::new();
+                        *err_list.write() = Some(e);
+                    }
                 }
+                *loading_list.write() = false;
             });
         });
     }
@@ -1509,25 +1518,53 @@ fn Scan(id: String) -> Element {
                             class: "form-control",
                             r#type: "number", 
                             min: "0", 
-                            value: "{min_size_filter}",
+                            value: {
+                                let unit = min_size_unit.read().clone();
+                                let bytes = *min_size_filter.read();
+                                match unit.as_str() {
+                                    "mb" => {
+                                        let val = (bytes as f64 / (1024.0 * 1024.0)).max(0.0);
+                                        if (val.fract() - 0.0).abs() < f64::EPSILON {
+                                            format!("{:.0}", val)
+                                        } else {
+                                            format!("{:.2}", val)
+                                        }
+                                    }
+                                    "gb" => {
+                                        let val = (bytes as f64 / (1024.0 * 1024.0 * 1024.0)).max(0.0);
+                                        if (val.fract() - 0.0).abs() < f64::EPSILON {
+                                            format!("{:.0}", val)
+                                        } else {
+                                            format!("{:.2}", val)
+                                        }
+                                    }
+                                    _ => bytes.max(0).to_string(),
+                                }
+                            },
                             style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;width:120px;",
                             oninput: move |e| {
                                 let value = e.value();
                                 let mut min_size_filter = min_size_filter.clone();
-                                if let Ok(v) = value.parse::<i64>() { min_size_filter.set(v.max(0)); }
+                                let unit = min_size_unit.read().clone();
+                                if value.trim().is_empty() {
+                                    min_size_filter.set(0);
+                                } else if let Ok(v) = value.parse::<f64>() {
+                                    let multiplier = match unit.as_str() {
+                                        "mb" => 1024.0 * 1024.0,
+                                        "gb" => 1024.0 * 1024.0 * 1024.0,
+                                        _ => 1.0,
+                                    };
+                                    let bytes = (v.max(0.0) * multiplier).round() as i64;
+                                    min_size_filter.set(bytes);
+                                }
                             }
                         }
                         select { 
+                            value: "{min_size_unit}",
                             style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;",
                             oninput: move |e| {
-                                let value = e.value();
-                                let current_size = min_size_filter.read().clone();
-                                let mut min_size_filter = min_size_filter.clone();
-                                match value.as_str() {
-                                    "mb" => min_size_filter.set(current_size * 1024),
-                                    "gb" => min_size_filter.set(current_size * 1024 * 1024),
-                                    _ => {}
-                                }
+                                let mut unit = min_size_unit.clone();
+                                unit.set(e.value());
                             },
                             option { value: "b", "Bytes" }
                             option { value: "mb", "→ MB" }
@@ -1555,10 +1592,12 @@ fn Scan(id: String) -> Element {
                             onclick: move |_| {
                                 let mut search_query = search_query.clone();
                                 let mut min_size_filter = min_size_filter.clone();
+                                let mut min_size_unit = min_size_unit.clone();
                                 let mut file_type_filter = file_type_filter.clone();
                                 let mut show_hidden = show_hidden.clone();
                                 search_query.set(String::new());
                                 min_size_filter.set(0);
+                                min_size_unit.set("b".to_string());
                                 file_type_filter.set("all".to_string());
                                 show_hidden.set(false);
                             },

@@ -115,8 +115,10 @@ fn perform_move(req: MovePathRequest) -> AppResult<MoveOutcome> {
         if !parent.exists() {
             fs::create_dir_all(parent)?;
         }
-    } else {
-        return Err(AppError::BadRequest("destination path must include a parent directory".into()));
+    } else if !dest_path.exists() {
+        return Err(AppError::BadRequest(
+            "destination path must include a parent directory".into(),
+        ));
     }
 
     let metadata = fs::metadata(&source_path)?;
@@ -140,7 +142,12 @@ fn perform_move(req: MovePathRequest) -> AppResult<MoveOutcome> {
 fn move_file(source: &Path, destination: &Path, req: &MovePathRequest) -> AppResult<u64> {
     if destination.exists() {
         if req.overwrite {
-            fs::remove_file(destination)?;
+            let dest_meta = fs::metadata(destination)?;
+            if dest_meta.is_dir() {
+                fs::remove_dir_all(destination)?;
+            } else {
+                fs::remove_file(destination)?;
+            }
         } else {
             return Err(AppError::Conflict(format!(
                 "destination file already exists: {}",
@@ -180,7 +187,12 @@ fn move_directory(
 ) -> AppResult<u64> {
     if destination.exists() {
         if req.overwrite {
-            fs::remove_dir_all(destination)?;
+            let dest_meta = fs::metadata(destination)?;
+            if dest_meta.is_dir() {
+                fs::remove_dir_all(destination)?;
+            } else {
+                fs::remove_file(destination)?;
+            }
         } else {
             return Err(AppError::Conflict(format!(
                 "destination directory already exists: {}",

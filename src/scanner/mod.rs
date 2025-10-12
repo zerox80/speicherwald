@@ -54,8 +54,7 @@ struct FileRecord {
 }
 
 fn system_time_to_secs(st: Option<SystemTime>) -> Option<i64> {
-    st.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
+    st.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64)
 }
 
 fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
@@ -89,7 +88,7 @@ pub async fn run_scan(
 
     // FIX Bug #70 - Better CPU core calculation
     let cpu_cores = num_cpus::get().max(1); // Ensure at least 1 core
-    // Use 75% of CPU cores for larger systems, 50% for smaller ones
+                                            // Use 75% of CPU cores for larger systems, 50% for smaller ones
     let optimal_workers = if cpu_cores >= 4 {
         ((cpu_cores * 3) / 4).max(2)
     } else if cpu_cores >= 2 {
@@ -104,10 +103,8 @@ pub async fn run_scan(
     }
     let sem = Arc::new(Semaphore::new(concurrency));
     // Channel buffer size: ensure it's large enough but bounded
-    let channel_size = concurrency.checked_mul(8)
-        .and_then(|v| v.checked_add(128))
-        .unwrap_or(2048)
-        .clamp(256, 2048);
+    let channel_size =
+        concurrency.checked_mul(8).and_then(|v| v.checked_add(128)).unwrap_or(2048).clamp(256, 2048);
     let (tx_res, mut rx_res) =
         mpsc::channel::<(Vec<NodeRecord>, Vec<FileRecord>, ScanResultSummary)>(channel_size);
 
@@ -170,10 +167,7 @@ pub async fn run_scan(
                         code: "metadata_failed".into(),
                         message: "failed to stat root".into(),
                     });
-                    let warn_summary = ScanResultSummary {
-                        warnings: 1,
-                        ..Default::default()
-                    };
+                    let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
                     let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                     drop(permit);
                     return;
@@ -219,10 +213,7 @@ pub async fn run_scan(
                                     code: "metadata_failed".into(),
                                     message: "failed to stat".into(),
                                 });
-                                let warn_summary = ScanResultSummary {
-                                    warnings: 1,
-                                    ..Default::default()
-                                };
+                                let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
                                 let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                                 continue;
                             }
@@ -310,10 +301,7 @@ pub async fn run_scan(
                         code: "read_dir_failed".into(),
                         message: "failed to read directory".into(),
                     });
-                    let warn_summary = ScanResultSummary {
-                        warnings: 1,
-                        ..Default::default()
-                    };
+                    let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
                     let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                 }
             }
@@ -339,6 +327,7 @@ pub async fn run_scan(
                     let gs2 = gs.clone();
                     let handle = std::thread::spawn(move || {
                         let mut ssum = ScanResultSummary::default();
+                        let mut last_sent_summary = ScanResultSummary::default();
                         let mut snodes: Vec<NodeRecord> = Vec::with_capacity(flush_thr);
                         let mut sfiles: Vec<FileRecord> = Vec::with_capacity(flush_thr);
                         let _ = scan_dir(
@@ -356,7 +345,9 @@ pub async fn run_scan(
                             flush_thr,
                         );
                         // send remaining
-                        let _ = tx_res_sub.blocking_send((snodes, sfiles, ssum.clone()));
+                        let delta = diff_summary(&ssum, &last_sent_summary);
+                        last_sent_summary = ssum.clone();
+                        let _ = tx_res_sub.blocking_send((snodes, sfiles, delta));
                         ssum
                     });
                     running.push(handle);
@@ -395,19 +386,16 @@ pub async fn run_scan(
                 mtime: root_latest_mtime,
                 atime: root_latest_atime,
             };
-            let _ = tx_res_cl.blocking_send((
-                vec![root_node],
-                Vec::new(),
-                ScanResultSummary {
-                    total_dirs: sub_dirs_total.saturating_add(1), // Include self + subdirs
-                    total_files: root_files.saturating_add(sub_files_total),
-                    total_logical_size: root_files_logical.saturating_add(subtree_logical),
-                    total_allocated_size: root_files_alloc.saturating_add(subtree_alloc),
-                    warnings: 0,
-                    latest_mtime: root_latest_mtime,
-                    latest_atime: root_latest_atime,
-                },
-            ));
+            let root_delta = ScanResultSummary {
+                total_dirs: 1,
+                total_files: root_files,
+                total_logical_size: root_files_logical,
+                total_allocated_size: root_files_alloc,
+                warnings: 0,
+                latest_mtime: root_latest_mtime,
+                latest_atime: root_latest_atime,
+            };
+            let _ = tx_res_cl.blocking_send((vec![root_node], Vec::new(), root_delta));
             drop(permit);
         });
     }
@@ -437,7 +425,10 @@ pub async fn run_scan(
                         nodes.append(&mut ns);
                         files.append(&mut fs);
                         if nodes.len() + files.len() >= flush_threshold.max(batch_size) {
-                            let _ = persist_batches(&pool, id, &mut nodes, &mut files, batch_size).await;
+                            if let Err(e) = persist_batches(&pool, id, &mut nodes, &mut files, batch_size).await {
+                                tracing::error!("Failed to persist scan batch: {:?}", e);
+                                return Err(e);
+                            }
                         }
                     }
                     None => break,
@@ -445,7 +436,10 @@ pub async fn run_scan(
             }
             _ = ticker.tick() => {
                 if !nodes.is_empty() || !files.is_empty() {
-                    let _ = persist_batches(&pool, id, &mut nodes, &mut files, batch_size).await;
+                    if let Err(e) = persist_batches(&pool, id, &mut nodes, &mut files, batch_size).await {
+                        tracing::error!("Failed to persist scan batch: {:?}", e);
+                        return Err(e);
+                    }
                 }
                 // Fortschritt periodisch in scans Tabelle schreiben, damit UI während running Zahlen sieht
                 let _ = sqlx::query(
@@ -726,9 +720,7 @@ fn build_globset(patterns: &[String]) -> anyhow::Result<GlobSet> {
         // der Pfadnormalisierung in `matches_excludes` (\\ -> /) übereinstimmen.
         let norm = trimmed.replace('\\', "/");
         // Catch glob compilation errors
-        let g = Glob::new(&norm).map_err(|e| {
-            anyhow::anyhow!("Invalid glob pattern '{}': {}", norm, e)
-        })?;
+        let g = Glob::new(&norm).map_err(|e| anyhow::anyhow!("Invalid glob pattern '{}': {}", norm, e))?;
         b.add(g);
     }
     Ok(b.build()?)
@@ -949,7 +941,7 @@ async fn persist_batches(
             let allocated_size_safe = n.allocated_size.min(i64::MAX as u64) as i64;
             let file_count_safe = n.file_count.min(i64::MAX as u64) as i64;
             let dir_count_safe = n.dir_count.min(i64::MAX as u64) as i64;
-            
+
             b.push_bind(&sid)
                 .push_bind(&n.path)
                 .push_bind(n.parent_path.as_deref())
@@ -975,7 +967,7 @@ async fn persist_batches(
             // Clamp u64 values to i64::MAX to prevent overflow when converting to i64 for SQLite
             let logical_size_safe = f.logical_size.min(i64::MAX as u64) as i64;
             let allocated_size_safe = f.allocated_size.min(i64::MAX as u64) as i64;
-            
+
             b.push_bind(&sid)
                 .push_bind(&f.path)
                 .push_bind(f.parent_path.as_deref())
@@ -991,4 +983,16 @@ async fn persist_batches(
     nodes.clear();
     files.clear();
     Ok(())
+}
+
+fn diff_summary(current: &ScanResultSummary, previous: &ScanResultSummary) -> ScanResultSummary {
+    ScanResultSummary {
+        total_dirs: current.total_dirs.saturating_sub(previous.total_dirs),
+        total_files: current.total_files.saturating_sub(previous.total_files),
+        total_logical_size: current.total_logical_size.saturating_sub(previous.total_logical_size),
+        total_allocated_size: current.total_allocated_size.saturating_sub(previous.total_allocated_size),
+        warnings: current.warnings.saturating_sub(previous.warnings),
+        latest_mtime: current.latest_mtime.clone(),
+        latest_atime: current.latest_atime.clone(),
+    }
 }

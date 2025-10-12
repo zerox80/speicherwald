@@ -66,6 +66,34 @@ pub enum SearchItem {
     },
 }
 
+const LIKE_ESCAPE: char = '!';
+
+fn escape_like_pattern(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '%' | '_' | LIKE_ESCAPE) {
+            out.push(LIKE_ESCAPE);
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn sanitize_search_term(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::InvalidInput("Search query cannot be empty".to_string()));
+    }
+    if trimmed.chars().count() > 500 {
+        return Err(AppError::InvalidInput("Search query too long".to_string()));
+    }
+    let sanitized: String = trimmed.chars().filter(|ch| !ch.is_control() || ch.is_whitespace()).collect();
+    if sanitized.trim().is_empty() {
+        return Err(AppError::InvalidInput("Search query contains only special characters".to_string()));
+    }
+    Ok(sanitized)
+}
+
 pub async fn search_scan(
     State(state): State<AppState>,
     Path(scan_id): Path<Uuid>,
@@ -73,32 +101,13 @@ pub async fn search_scan(
     Query(query): Query<SearchQuery>,
 ) -> AppResult<impl IntoResponse> {
     // Per-endpoint rate limit: "/scans/:id/search"
-    let ip = extract_ip_from_headers(&headers);
+    let ip = extract_ip_from_headers(&headers, None);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/scans/:id/search", ip).await {
         return Ok((status, body).into_response());
     }
-    // Validate query (FIX Bug #52 - Sanitize LIKE patterns)
-    if query.query.trim().is_empty() {
-        return Err(AppError::InvalidInput("Search query cannot be empty".to_string()));
-    }
-    
-    // Sanitize search query to prevent LIKE injection
-    let sanitized_query = query.query.trim()
-        .replace('\\', "")
-        .replace('%', "")
-        .replace('_', "")
-        .replace('[', "")
-        .replace(']', "");
-    
-    if sanitized_query.is_empty() {
-        return Err(AppError::InvalidInput("Search query contains only special characters".to_string()));
-    }
-    
-    if sanitized_query.len() > 500 {
-        return Err(AppError::InvalidInput("Search query too long".to_string()));
-    }
-
-    let search_pattern = format!("%{}%", sanitized_query);
+    // Sanitize search query to prevent LIKE injection while preserving legitimate characters
+    let sanitized_query = sanitize_search_term(&query.query)?;
+    let search_pattern = format!("%{}%", escape_like_pattern(&sanitized_query));
     let include_files = query.include_files.unwrap_or(true);
     let include_dirs = query.include_dirs.unwrap_or(true);
 
@@ -110,7 +119,7 @@ pub async fn search_scan(
     // Clamp to keep resource usage bounded even with large offsets. (FIX Bug #19)
     let limit_clamped = query.limit.clamp(1, 1000);
     let offset_clamped = query.offset.max(0).min(10_000); // Prevent excessive offset and performance issues
-    
+
     // Validate that offset + limit doesn't overflow
     if let Some(_overflow) = offset_clamped.checked_add(limit_clamped) {
         // OK
@@ -121,7 +130,10 @@ pub async fn search_scan(
     // Build COUNT queries (parameterized)
     let total_dirs = if include_dirs {
         let mut qb = QueryBuilder::new("SELECT COUNT(*) AS cnt FROM nodes WHERE scan_id = ");
-        qb.push_bind(scan_id.to_string()).push(" AND is_dir = 1 AND path LIKE ").push_bind(&search_pattern);
+        qb.push_bind(scan_id.to_string())
+            .push(" AND is_dir = 1 AND path LIKE ")
+            .push_bind(&search_pattern)
+            .push(" ESCAPE '!'");
         if let Some(min_size) = query.min_size {
             qb.push(" AND allocated_size >= ").push_bind(min_size);
         }
@@ -136,7 +148,10 @@ pub async fn search_scan(
 
     let total_files = if include_files {
         let mut qb = QueryBuilder::new("SELECT COUNT(*) AS cnt FROM files WHERE scan_id = ");
-        qb.push_bind(scan_id.to_string()).push(" AND path LIKE ").push_bind(&search_pattern);
+        qb.push_bind(scan_id.to_string())
+            .push(" AND path LIKE ")
+            .push_bind(&search_pattern)
+            .push(" ESCAPE '!'");
         if let Some(min_size) = query.min_size {
             qb.push(" AND allocated_size >= ").push_bind(min_size);
         }
@@ -145,14 +160,15 @@ pub async fn search_scan(
         }
         if let Some(file_type) = &query.file_type {
             // Sanitize file_type to prevent injection (for COUNT query) (FIX Bug #53)
-            let sanitized = file_type.chars()
+            let sanitized = file_type
+                .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                 .take(20)
                 .collect::<String>();
             if !sanitized.is_empty() {
                 // Use parameterized pattern to prevent any LIKE injection
                 let ext_pattern = format!(".{}", sanitized.to_lowercase());
-                qb.push(" AND LOWER(path) LIKE '%' || ").push_bind(ext_pattern).push(" COLLATE NOCASE");
+                qb.push(" AND LOWER(path) LIKE '%' || ").push_bind(ext_pattern).push(" ESCAPE '!'");
             }
         }
         let row = qb.build().fetch_one(&state.db).await?;
@@ -172,7 +188,8 @@ pub async fn search_scan(
         qb.push("SELECT 'dir' AS kind, path, logical_size, allocated_size, file_count, dir_count, depth FROM nodes WHERE scan_id = ")
             .push_bind(scan_id.to_string())
             .push(" AND is_dir = 1 AND path LIKE ")
-            .push_bind(&search_pattern);
+            .push_bind(&search_pattern)
+            .push(" ESCAPE '!'");
         if let Some(min_size) = query.min_size {
             qb.push(" AND allocated_size >= ").push_bind(min_size);
         }
@@ -188,7 +205,8 @@ pub async fn search_scan(
         qb.push("SELECT 'file' AS kind, path, logical_size, allocated_size, NULL AS file_count, NULL AS dir_count, NULL AS depth FROM files WHERE scan_id = ")
             .push_bind(scan_id.to_string())
             .push(" AND path LIKE ")
-            .push_bind(&search_pattern);
+            .push_bind(&search_pattern)
+            .push(" ESCAPE '!'");
         if let Some(min_size) = query.min_size {
             qb.push(" AND allocated_size >= ").push_bind(min_size);
         }
@@ -197,14 +215,15 @@ pub async fn search_scan(
         }
         if let Some(file_type) = &query.file_type {
             // Sanitize file_type to prevent injection (for UNION query) (FIX Bug #53)
-            let sanitized = file_type.chars()
+            let sanitized = file_type
+                .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                 .take(20)
                 .collect::<String>();
             if !sanitized.is_empty() {
                 // Use parameterized pattern to prevent any LIKE injection
                 let ext_pattern = format!(".{}", sanitized.to_lowercase());
-                qb.push(" AND LOWER(path) LIKE '%' || ").push_bind(ext_pattern).push(" COLLATE NOCASE");
+                qb.push(" AND LOWER(path) LIKE '%' || ").push_bind(ext_pattern).push(" ESCAPE '!'");
             }
         }
     }
@@ -219,11 +238,8 @@ pub async fn search_scan(
         let kind: String = row.try_get("kind")?;
         let path: String = row.try_get("path")?;
         // FIX Bug #32 - Better path name extraction
-        let name = std::path::Path::new(&path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&path)
-            .to_string();
+        let name =
+            std::path::Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or(&path).to_string();
         if kind == "dir" {
             items.push(SearchItem::Dir {
                 path,
@@ -243,7 +259,7 @@ pub async fn search_scan(
                 // 3. Reasonable length
                 // 4. Only alphanumeric characters
                 if !ext.is_empty()
-                    && !ext.contains(['\\', '/']) 
+                    && !ext.contains(['\\', '/'])
                     && ext.len() <= 15
                     && ext.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
                 {

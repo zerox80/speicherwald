@@ -99,7 +99,7 @@ impl Default for ScanOptions {
         // Calculate concurrency: use half the CPU cores, minimum 2, maximum 16
         let cpu_count = num_cpus::get();
         let default_concurrency = (cpu_count / 2).max(2).min(16);
-        
+
         Self {
             follow_symlinks: false,
             include_hidden: true,

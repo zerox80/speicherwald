@@ -20,7 +20,7 @@ use crate::{
     error::{AppError, AppResult},
     middleware::ip::extract_ip_from_headers,
     middleware::validation::{validate_file_path, validate_scan_options},
-    scanner::{self, NodeRecord},
+    scanner,
     state::{AppState, JobHandle},
     types::{
         CreateScanRequest, CreateScanResponse, ListItem, NodeDto, ScanEvent, ScanOptions, ScanSummary,
@@ -34,7 +34,7 @@ pub async fn create_scan(
     Json(req): Json<CreateScanRequest>,
 ) -> AppResult<Response> {
     // Per-endpoint rate limit: "/scans"
-    let ip = extract_ip_from_headers(&headers);
+    let ip = extract_ip_from_headers(&headers, None);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/scans", ip).await {
         return Ok((status, body).into_response());
     }
@@ -247,20 +247,23 @@ pub async fn list_scans(State(state): State<AppState>) -> AppResult<impl IntoRes
         .filter_map(|r| {
             let id_str = r.get::<String, _>("id");
             // Validate UUID before including in response - reject invalid entries
-            Uuid::parse_str(&id_str).map_err(|e| {
-                tracing::error!("Invalid UUID in scans table: {} - {} (data corruption)", id_str, e);
-                e
-            }).ok().map(|id| ScanSummary {
-                id,
-            status: r.get::<String, _>("status"),
-            started_at: r.get::<Option<String>, _>("started_at"),
-            finished_at: r.get::<Option<String>, _>("finished_at"),
-            total_logical_size: r.get::<i64, _>("total_logical_size"),
-            total_allocated_size: r.get::<i64, _>("total_allocated_size"),
-            dir_count: r.get::<i64, _>("dir_count"),
-            file_count: r.get::<i64, _>("file_count"),
-            warning_count: r.get::<i64, _>("warning_count"),
-            })
+            Uuid::parse_str(&id_str)
+                .map_err(|e| {
+                    tracing::error!("Invalid UUID in scans table: {} - {} (data corruption)", id_str, e);
+                    e
+                })
+                .ok()
+                .map(|id| ScanSummary {
+                    id,
+                    status: r.get::<String, _>("status"),
+                    started_at: r.get::<Option<String>, _>("started_at"),
+                    finished_at: r.get::<Option<String>, _>("finished_at"),
+                    total_logical_size: r.get::<i64, _>("total_logical_size"),
+                    total_allocated_size: r.get::<i64, _>("total_allocated_size"),
+                    dir_count: r.get::<i64, _>("dir_count"),
+                    file_count: r.get::<i64, _>("file_count"),
+                    warning_count: r.get::<i64, _>("warning_count"),
+                })
         })
         .collect();
 
@@ -322,7 +325,7 @@ pub async fn cancel_scan(
             false
         }
     };
-    
+
     // Update DB after releasing lock to avoid deadlock
     if was_running && !purge {
         let _ = sqlx::query(
@@ -359,19 +362,19 @@ pub async fn scan_events(
         }
     };
 
-    let stream = BroadcastStream::new(rx).filter_map(move |res| {
-        match res {
+    let stream = BroadcastStream::new(rx)
+        .filter_map(move |res| match res {
             Ok(event) => Some(event),
             Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
                 tracing::warn!("SSE stream lagged by {} messages for scan {}", n, id);
                 None
             }
-        }
-    }).map(|ev| {
-        let data = serde_json::to_string(&ev)
-            .unwrap_or_else(|_| json!({"type":"warning","message":"serialization error"}).to_string());
-        Ok::<Event, std::convert::Infallible>(Event::default().data(data))
-    });
+        })
+        .map(|ev| {
+            let data = serde_json::to_string(&ev)
+                .unwrap_or_else(|_| json!({"type":"warning","message":"serialization error"}).to_string());
+            Ok::<Event, std::convert::Infallible>(Event::default().data(data))
+        });
 
     Ok(Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)).text("keep-alive"),
@@ -381,31 +384,35 @@ pub async fn scan_events(
 // Removed - inline usage is clearer and avoids potential timezone issues
 
 // FIX Bug #64 - Add missing helper functions
-async fn get_subtree_totals(root: &str, db: &sqlx::SqlitePool) -> Result<(i64, i64), sqlx::Error> {
-    // Get total files and dirs in subtree (recursive)
-    let scan_result = sqlx::query(
-        "SELECT COALESCE(SUM(file_count), 0) as total_files, COALESCE(COUNT(*), 0) as total_dirs 
-         FROM nodes WHERE path LIKE ?1 || '%' AND is_dir = 1"
+async fn get_subtree_totals(
+    scan_id: Uuid,
+    root: &str,
+    db: &sqlx::SqlitePool,
+) -> Result<(i64, i64), sqlx::Error> {
+    let mut prefix = root.to_string();
+    if !prefix.ends_with('/') && !prefix.ends_with('\\') {
+        prefix.push(if prefix.contains('\\') { '\\' } else { '/' });
+    }
+    let escaped_prefix = escape_like_pattern(&prefix);
+    let pattern = format!("{}%", escaped_prefix);
+
+    let row = sqlx::query(
+        "SELECT \
+            COALESCE(SUM(file_count), 0) AS total_files, \
+            COALESCE(SUM(CASE WHEN path = ?1 THEN 0 ELSE 1 END), 0) AS total_dirs \
+         FROM nodes \
+         WHERE scan_id = ?2 \
+           AND (path = ?1 OR path LIKE ?3 ESCAPE '!')",
     )
     .bind(root)
+    .bind(scan_id.to_string())
+    .bind(pattern)
     .fetch_one(db)
     .await?;
-    
-    let total_files: i64 = scan_result.try_get("total_files").unwrap_or(0);
-    let total_dirs: i64 = scan_result.try_get("total_dirs").unwrap_or(0);
-    Ok((total_files, total_dirs))
-}
 
-async fn get_files_in_dir(dir: &str, db: &sqlx::SqlitePool) -> Result<i64, sqlx::Error> {
-    // Get count of files directly in this directory (non-recursive)
-    let result = sqlx::query(
-        "SELECT COUNT(*) as cnt FROM files WHERE parent_path = ?1"
-    )
-    .bind(dir)
-    .fetch_one(db)
-    .await?;
-    
-    Ok(result.try_get("cnt").unwrap_or(0))
+    let total_files: i64 = row.try_get("total_files").unwrap_or(0);
+    let total_dirs: i64 = row.try_get("total_dirs").unwrap_or(0);
+    Ok((total_files, total_dirs))
 }
 
 // Async helper to fetch mtime (seconds since epoch) without blocking the Tokio runtime
@@ -436,6 +443,19 @@ async fn get_atime_secs(path: &str) -> Option<i64> {
     .await
     .ok()
     .flatten()
+}
+
+const LIKE_ESCAPE: char = '!';
+
+fn escape_like_pattern(p: &str) -> String {
+    let mut out = String::with_capacity(p.len());
+    for ch in p.chars() {
+        if matches!(ch, '%' | '_' | LIKE_ESCAPE) {
+            out.push(LIKE_ESCAPE);
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn normalize_query_path(p: &str) -> String {
@@ -497,7 +517,7 @@ pub async fn get_tree(
         "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count, mtime, atime FROM nodes WHERE scan_id="
     );
     qb.push_bind(id.to_string());
-    
+
     let mut pattern_eq: Option<String> = None;
     let mut pattern_lo: Option<String> = None;
     let mut pattern_hi: Option<String> = None;
@@ -661,42 +681,47 @@ pub async fn get_list(
                 // fetch nodes for these paths to get sizes/counts
                 for root in roots {
                     let root_clone = root.clone();
-                    let root_node = NodeRecord {
-                        path: root.clone(),
-                        parent_path: None,
-                        depth: 0,
-                        is_dir: true,
-                        logical_size: 0,
-                        allocated_size: 0,
-                        file_count: 0,
-                        dir_count: 0,
-                        mtime: get_mtime_secs(&root).await,
-                        atime: get_atime_secs(&root).await,
+                    let (total_files, total_dirs) = get_subtree_totals(id, &root_clone, &state.db).await?;
+
+                    let node_stats = sqlx::query(
+                        "SELECT logical_size, allocated_size, mtime, atime FROM nodes WHERE scan_id = ?1 AND path = ?2 LIMIT 1",
+                    )
+                    .bind(id.to_string())
+                    .bind(&root_clone)
+                    .fetch_optional(&state.db)
+                    .await?;
+
+                    let (logical_size, allocated_size, db_mtime, db_atime) = if let Some(ns) = node_stats {
+                        (
+                            ns.get::<i64, _>("logical_size"),
+                            ns.get::<i64, _>("allocated_size"),
+                            ns.get::<Option<i64>, _>("mtime"),
+                            ns.get::<Option<i64>, _>("atime"),
+                        )
+                    } else {
+                        (0, 0, None, None)
                     };
-                    // FIX Bug #65 - Remove duplicate calculation
-                    let (sub_files_total, sub_dirs_total) = get_subtree_totals(&root_clone, &state.db).await?;
-                    let root_files = get_files_in_dir(&root_clone, &state.db).await?;
-                    let total_file_count = root_files.saturating_add(sub_files_total);
-                    let mtime_val = root_node.mtime;
-                    let atime_val = root_node.atime;
-                    // FIX Bug #36 - Better unwrap_or handling
+
+                    let mtime = db_mtime.or_else(|| get_mtime_secs(&root).await);
+                    let atime = db_atime.or_else(|| get_atime_secs(&root).await);
+
                     let name = std::path::Path::new(&root)
                         .file_name()
                         .and_then(|s| s.to_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| root.clone());
-                    
+
                     items.push(ListItem::Dir {
                         name,
                         path: root,
                         parent_path: None,
                         depth: 0,
-                        logical_size: 0,
-                        allocated_size: 0,
-                        file_count: total_file_count,
-                        dir_count: sub_dirs_total,
-                        mtime: mtime_val,
-                        atime: atime_val,
+                        logical_size,
+                        allocated_size,
+                        file_count: total_files.max(0),
+                        dir_count: total_dirs.max(0),
+                        mtime,
+                        atime,
                     });
                 }
             }
@@ -834,14 +859,16 @@ pub async fn get_recent(
             "SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime FROM nodes WHERE scan_id="
         );
         qb.push_bind(id.to_string()).push(" AND is_dir=1");
-        
-        if let (Some(eq), Some(lo), Some(hi)) = (subtree_eq.as_ref(), subtree_lo.as_ref(), subtree_hi.as_ref()) {
+
+        if let (Some(eq), Some(lo), Some(hi)) =
+            (subtree_eq.as_ref(), subtree_lo.as_ref(), subtree_hi.as_ref())
+        {
             qb.push(" AND (path = ").push_bind(eq);
             qb.push(" OR (path >= ").push_bind(lo);
             qb.push(" AND path < ").push_bind(hi).push("))");
         }
         qb.push(" LIMIT ").push_bind(fetch_cap);
-        
+
         let rows = qb.build().fetch_all(&state.db).await?;
         for r in rows {
             let p: String = r.get("path");
@@ -863,17 +890,19 @@ pub async fn get_recent(
     // FIX Bug #3,#9 - Use QueryBuilder instead of string replacement
     if want_files {
         let mut qb = QueryBuilder::new(
-            "SELECT path, parent_path, logical_size, allocated_size, mtime, atime FROM files WHERE scan_id="
+            "SELECT path, parent_path, logical_size, allocated_size, mtime, atime FROM files WHERE scan_id=",
         );
         qb.push_bind(id.to_string());
-        
-        if let (Some(eq), Some(lo), Some(hi)) = (subtree_eq.as_ref(), subtree_lo.as_ref(), subtree_hi.as_ref()) {
+
+        if let (Some(eq), Some(lo), Some(hi)) =
+            (subtree_eq.as_ref(), subtree_lo.as_ref(), subtree_hi.as_ref())
+        {
             qb.push(" AND (path = ").push_bind(eq);
             qb.push(" OR (path >= ").push_bind(lo);
             qb.push(" AND path < ").push_bind(hi).push("))");
         }
         qb.push(" LIMIT ").push_bind(fetch_cap);
-        
+
         let rows = qb.build().fetch_all(&state.db).await?;
         for r in rows {
             let p: String = r.get("path");
@@ -903,17 +932,18 @@ pub async fn get_recent(
 fn sort_items(items: &mut [ListItem], sort: Option<&str>, order: Option<&str>) {
     // FIX Bug #68 - Default should depend on sort type
     let sort_key = match sort {
-        Some("name") | Some("logical") | Some("type") | Some("modified") | Some("accessed") | Some("allocated") => sort.unwrap(),
-        _ => "allocated" // default fallback
+        Some("name") | Some("logical") | Some("type") | Some("modified") | Some("accessed")
+        | Some("allocated") => sort.unwrap(),
+        _ => "allocated", // default fallback
     };
-    
+
     let desc = match order {
         Some("asc") => false,
         Some("desc") => true,
-        None => sort_key != "name", // desc for size/type, asc for name
+        None => matches!(sort_key, "logical" | "allocated" | "modified" | "accessed"),
         _ => false,
     };
-    
+
     match sort_key {
         "name" => {
             items.sort_by_key(|a| get_name(a).to_lowercase());
@@ -921,27 +951,37 @@ fn sort_items(items: &mut [ListItem], sort: Option<&str>, order: Option<&str>) {
             if matches!(order, Some("desc")) {
                 items.reverse();
             }
-        },
+        }
         "logical" => {
             items.sort_by_key(get_logical);
-            if desc { items.reverse(); }
-        },
+            if desc {
+                items.reverse();
+            }
+        }
         "type" => {
             items.sort_by_key(|i| if is_dir(i) { 0 } else { 1 });
-            if desc { items.reverse(); }
-        },
+            if desc {
+                items.reverse();
+            }
+        }
         "modified" => {
             items.sort_by_key(get_mtime);
-            if desc { items.reverse(); }
-        },
+            if desc {
+                items.reverse();
+            }
+        }
         "accessed" => {
             items.sort_by_key(get_atime);
-            if desc { items.reverse(); }
-        },
+            if desc {
+                items.reverse();
+            }
+        }
         _ => {
             items.sort_by_key(get_alloc);
-            if desc { items.reverse(); }
-        },
+            if desc {
+                items.reverse();
+            }
+        }
     }
 }
 

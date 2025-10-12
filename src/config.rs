@@ -165,9 +165,7 @@ pub fn ensure_sqlite_parent_dir(url: &str) -> anyhow::Result<()> {
                 let drive_byte = bytes[1];
                 // Only allow valid ASCII drive letters (A-Z, a-z)
                 // Extended ASCII (>= 128) is NOT valid for Windows drive letters
-                if (drive_byte >= b'A' && drive_byte <= b'Z') 
-                    || (drive_byte >= b'a' && drive_byte <= b'z')
-                {
+                if (drive_byte >= b'A' && drive_byte <= b'Z') || (drive_byte >= b'a' && drive_byte <= b'z') {
                     &path[1..]
                 } else {
                     // Invalid drive letter, keep the path as-is and let it fail naturally

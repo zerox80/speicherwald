@@ -21,7 +21,7 @@ pub async fn list_drives(State(state): State<AppState>, headers: HeaderMap) -> R
     use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives};
 
     // Per-endpoint rate limit: "/drives"
-    let ip = extract_ip_from_headers(&headers);
+    let ip = extract_ip_from_headers(&headers, None);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/drives", ip).await {
         return (status, body).into_response();
     }
@@ -108,7 +108,7 @@ pub async fn list_drives(State(state): State<AppState>, headers: HeaderMap) -> R
 #[cfg(not(windows))]
 pub async fn list_drives(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Per-endpoint rate limit: "/drives"
-    let ip = extract_ip_from_headers(&headers);
+    let ip = extract_ip_from_headers(&headers, None);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/drives", ip).await {
         return (status, body).into_response();
     }

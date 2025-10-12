@@ -73,38 +73,43 @@ pub async fn validate_request_middleware(req: Request, next: Next) -> Response {
 fn contains_path_traversal(path: &str) -> bool {
     // Check for actual path traversal sequences
     let lower = path.to_lowercase();
-    
+
     // Direct traversal patterns
     if path.contains("/..") || path.contains("\\..") || path.starts_with("..") {
         return true;
     }
-    
+
     // Current directory references that could be dangerous
     if path.contains("/./") || path.contains("\\.\\") {
         return true;
     }
-    
+
     // Multiple dots (bypass attempt: ....)
     if path.contains("....") {
         return true;
     }
-    
+
     // URL-encoded variants (single and double encoding)
     let encoded_patterns = [
-        "%2e%2e", "%252e%252e", // .. and double-encoded ..
-        "%2e/", "%252e%2f",     // ./
-        "/%2e", "%2f%2e",        // /.
-        "%2e\\", "%2e%5c",       // .\\ 
-        "%5c%2e", "%5c%5c",      // \\.
-        "%00",                   // Null byte
+        "%2e%2e",
+        "%252e%252e", // .. and double-encoded ..
+        "%2e/",
+        "%252e%2f", // ./
+        "/%2e",
+        "%2f%2e", // /.
+        "%2e\\",
+        "%2e%5c", // .\\
+        "%5c%2e",
+        "%5c%5c", // \\.
+        "%00",    // Null byte
     ];
-    
+
     for pattern in &encoded_patterns {
         if lower.contains(pattern) {
             return true;
         }
     }
-    
+
     // Null bytes
     path.contains('\0')
 }
@@ -209,7 +214,7 @@ pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_
             let is_drive_path = path.len() >= 2 && path.chars().nth(1) == Some(':');
             let is_extended_path = path.starts_with("\\\\?\\");
             let is_unc_path = path.starts_with("\\\\");
-            
+
             // More than one colon is never valid
             if colon_count > 1 {
                 return Err((
@@ -223,7 +228,7 @@ pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_
                     })),
                 ));
             }
-            
+
             // Single colon must be in valid position
             if colon_count == 1 && !is_drive_path && !is_extended_path && !is_unc_path {
                 return Err((
@@ -289,7 +294,8 @@ pub fn validate_scan_options(
 /// Sanitize user input for logging (removes control chars, limits length, escapes special chars)
 pub fn sanitize_for_logging(input: &str) -> String {
     // Remove control characters (except whitespace), escape quotes, and limit length
-    input.chars()
+    input
+        .chars()
         .filter(|c| !c.is_control() || c.is_whitespace())
         .take(200)
         .collect::<String>()

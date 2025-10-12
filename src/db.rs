@@ -11,7 +11,7 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     }
     // Foreign keys are critical - fail if this doesn't work
     sqlx::query("PRAGMA foreign_keys=ON;").execute(pool).await?;
-    
+
     // Additional tuning (best-effort)
     sqlx::query("PRAGMA busy_timeout=10000;").execute(pool).await.ok();
     sqlx::query("PRAGMA cache_size=-65536;").execute(pool).await.ok();
@@ -124,7 +124,7 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
         ("idx_files_scan_size", "CREATE INDEX IF NOT EXISTS idx_files_scan_size ON files(scan_id, allocated_size DESC)"),
         ("idx_files_scan_path", "CREATE INDEX IF NOT EXISTS idx_files_scan_path ON files(scan_id, path)"),
     ];
-    
+
     for (name, query) in indexes {
         if let Err(e) = sqlx::query(query).execute(pool).await {
             tracing::warn!("Failed to create index {}: {}", name, e);

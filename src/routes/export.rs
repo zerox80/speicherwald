@@ -244,8 +244,8 @@ fn escape_csv(s: &str) -> String {
     // More efficient: do all replacements in one pass
     s.chars()
         .flat_map(|c| match c {
-            '"' => vec!['"', '"'], // Escape double quote as ""
-            '\n' | '\r' => vec![' '], // Replace newlines with space
+            '"' => vec!['"', '"'],            // Escape double quote as ""
+            '\n' | '\r' => vec![' '],         // Replace newlines with space
             c if c.is_control() => vec![' '], // Replace other control chars
             c => vec![c],
         })

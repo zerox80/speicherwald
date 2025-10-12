@@ -65,10 +65,12 @@ async fn main() -> anyhow::Result<()> {
     let max_conns = std::env::var("SPEICHERWALD_DB_MAX_CONNECTIONS")
         .ok()
         .and_then(|v| {
-            v.parse::<u32>().map_err(|e| {
-                tracing::warn!("Invalid SPEICHERWALD_DB_MAX_CONNECTIONS value '{}': {}", v, e);
-                e
-            }).ok()
+            v.parse::<u32>()
+                .map_err(|e| {
+                    tracing::warn!("Invalid SPEICHERWALD_DB_MAX_CONNECTIONS value '{}': {}", v, e);
+                    e
+                })
+                .ok()
         })
         .unwrap_or(16)
         .clamp(1, 64);
@@ -176,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(10 * 1024 * 1024)
-                .clamp(1024 * 1024, 50 * 1024 * 1024) // 1MB to 50MB
+                .clamp(1024 * 1024, 50 * 1024 * 1024), // 1MB to 50MB
         ))
         .layer(from_fn(middleware::validation::validate_request_middleware))
         .layer(from_fn(middleware::rate_limit::rate_limit_middleware))

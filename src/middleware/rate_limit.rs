@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use super::ip::extract_ip_from_headers;
 use axum::{
-    extract::Request,
+    extract::{connect_info::ConnectInfo, Request},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -10,7 +10,7 @@ use axum::{
 use serde_json::json;
 use std::{
     collections::HashMap,
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
@@ -42,9 +42,7 @@ impl RateLimiter {
         // Remove old timestamps outside the window (safe against time skew)
         timestamps.retain(|&t| {
             // Handle potential time skew by checking duration validity
-            now.checked_duration_since(t)
-                .map(|d| d < self.window)
-                .unwrap_or(false)
+            now.checked_duration_since(t).map(|d| d < self.window).unwrap_or(false)
         });
 
         // Check if rate limit exceeded
@@ -82,11 +80,7 @@ impl RateLimiter {
 
         // Remove IPs with no recent requests (handle time skew)
         requests.retain(|_, timestamps| {
-            timestamps.retain(|&t| {
-                now.checked_duration_since(t)
-                    .map(|d| d < self.window)
-                    .unwrap_or(false)
-            });
+            timestamps.retain(|&t| now.checked_duration_since(t).map(|d| d < self.window).unwrap_or(false));
             !timestamps.is_empty()
         });
     }
@@ -94,7 +88,8 @@ impl RateLimiter {
 
 pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
     // Extract IP address via shared helper
-    let ip = extract_ip_from_headers(req.headers());
+    let remote_ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|info| info.0.ip());
+    let ip = extract_ip_from_headers(req.headers(), remote_ip);
 
     // Use global limiter shared across requests
     // Defaults: 1000 req / 60s, can be overridden via env:

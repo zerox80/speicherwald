@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -25,6 +25,8 @@ pub struct ScanResultSummary {
     pub total_logical_size: u64,
     pub total_allocated_size: u64,
     pub warnings: u64,
+    pub latest_mtime: Option<i64>,
+    pub latest_atime: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +39,8 @@ struct NodeRecord {
     allocated_size: u64,
     file_count: u64,
     dir_count: u64,
+    mtime: Option<i64>,
+    atime: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +49,22 @@ struct FileRecord {
     parent_path: Option<String>,
     logical_size: u64,
     allocated_size: u64,
+    mtime: Option<i64>,
+    atime: Option<i64>,
+}
+
+fn system_time_to_secs(st: Option<SystemTime>) -> Option<i64> {
+    st.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
+
+fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (None, None) => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -132,6 +152,10 @@ pub async fn run_scan(
                     return;
                 }
             };
+            let root_mtime = system_time_to_secs(meta.modified().ok());
+            let root_atime = system_time_to_secs(meta.accessed().ok());
+            let mut root_latest_mtime = root_mtime;
+            let mut root_latest_atime = root_atime;
             if !options_cl.follow_symlinks && is_reparse_point(&meta) {
                 // UNC/DFS shares and mapped network drives should be traversed even if marked as reparse points
                 if !is_network_path(&root_clone) {
@@ -176,6 +200,10 @@ pub async fn run_scan(
                                 continue;
                             }
                         };
+                        let entry_mtime = system_time_to_secs(md.modified().ok());
+                        let entry_atime = system_time_to_secs(md.accessed().ok());
+                        root_latest_mtime = max_opt(root_latest_mtime, entry_mtime);
+                        root_latest_atime = max_opt(root_latest_atime, entry_atime);
                         if md.is_dir() {
                             if !options_cl.follow_symlinks && is_reparse_point(&md) {
                                 // Allow DFS/UNC and mapped network dirs even if marked as reparse points
@@ -215,6 +243,8 @@ pub async fn run_scan(
                                 parent_path: Some(root_str.clone()),
                                 logical_size: logical_sz,
                                 allocated_size: alloc_sz,
+                                mtime: entry_mtime,
+                                atime: entry_atime,
                             });
                             if root_file_buf.len() >= flush_thr.max(1) {
                                 let mut out_files: Vec<FileRecord> = Vec::new();
@@ -315,6 +345,8 @@ pub async fn run_scan(
                 allocated_size: root_files_alloc.saturating_add(subtree_alloc),
                 file_count: root_files.saturating_add(sub_files_total),
                 dir_count: sub_dirs_total,
+                mtime: root_latest_mtime,
+                atime: root_latest_atime,
             };
             let _ = tx_res_cl.blocking_send((
                 vec![root_node],
@@ -325,6 +357,8 @@ pub async fn run_scan(
                     total_logical_size: root_files_logical,
                     total_allocated_size: root_files_alloc,
                     warnings: 0,
+                    latest_mtime: root_latest_mtime,
+                    latest_atime: root_latest_atime,
                 },
             ));
             drop(permit);
@@ -348,6 +382,8 @@ pub async fn run_scan(
                         summary.total_logical_size = summary.total_logical_size.saturating_add(sum.total_logical_size);
                         summary.total_allocated_size = summary.total_allocated_size.saturating_add(sum.total_allocated_size);
                         summary.warnings = summary.warnings.saturating_add(sum.warnings);
+                        summary.latest_mtime = max_opt(summary.latest_mtime, sum.latest_mtime);
+                        summary.latest_atime = max_opt(summary.latest_atime, sum.latest_atime);
 
                         // accumulate and persist in batches
                         nodes.append(&mut ns);
@@ -438,6 +474,12 @@ fn scan_dir(
         Err(e) => anyhow::bail!(e),
     };
 
+    let dir_mtime = system_time_to_secs(meta.modified().ok());
+    let dir_atime = system_time_to_secs(meta.accessed().ok());
+
+    summary.latest_mtime = max_opt(summary.latest_mtime, dir_mtime);
+    summary.latest_atime = max_opt(summary.latest_atime, dir_atime);
+
     if !options.follow_symlinks && is_reparse_point(&meta) {
         return Ok((0, 0, 0, 0));
     }
@@ -471,6 +513,11 @@ fn scan_dir(
                         continue;
                     }
                 };
+
+                let entry_mtime = system_time_to_secs(md.modified().ok());
+                let entry_atime = system_time_to_secs(md.accessed().ok());
+                summary.latest_mtime = max_opt(summary.latest_mtime, entry_mtime);
+                summary.latest_atime = max_opt(summary.latest_atime, entry_atime);
 
                 if md.is_dir() {
                     if !options.follow_symlinks && is_reparse_point(&md) {
@@ -526,6 +573,8 @@ fn scan_dir(
                         parent_path: Some(dir_str.clone()),
                         logical_size: logical_sz,
                         allocated_size: alloc_sz,
+                        mtime: entry_mtime,
+                        atime: entry_atime,
                     });
                 }
 
@@ -588,6 +637,8 @@ fn scan_dir(
         allocated_size: allocated,
         file_count: local_files,
         dir_count: local_dirs.saturating_sub(1), // exclude self
+        mtime: dir_mtime,
+        atime: dir_atime,
     });
 
     Ok((local_dirs, local_files, logical, allocated))
@@ -758,8 +809,8 @@ async fn persist_batches(
     // number of bound parameters; cap chunk sizes accordingly so a single
     // INSERT statement never exceeds this limit.
     const SQLITE_MAX_VARS: usize = 999;
-    const NODE_BINDS_PER_ROW: usize = 9; // scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count
-    const FILE_BINDS_PER_ROW: usize = 5; // scan_id, path, parent_path, logical_size, allocated_size
+    const NODE_BINDS_PER_ROW: usize = 11; // scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count, mtime, atime
+    const FILE_BINDS_PER_ROW: usize = 7; // scan_id, path, parent_path, logical_size, allocated_size, mtime, atime
 
     let max_node_rows_per_stmt = SQLITE_MAX_VARS / NODE_BINDS_PER_ROW;
     let max_file_rows_per_stmt = SQLITE_MAX_VARS / FILE_BINDS_PER_ROW;
@@ -768,7 +819,7 @@ async fn persist_batches(
     let node_chunk = batch_size.max(1).min(max_node_rows_per_stmt.max(1));
     for chunk in nodes.chunks(node_chunk) {
         let mut qb = QueryBuilder::new(
-            "INSERT INTO nodes (scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count) "
+            "INSERT INTO nodes (scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count, mtime, atime) "
         );
         qb.push_values(chunk, |mut b, n| {
             b.push_bind(&sid)
@@ -779,7 +830,9 @@ async fn persist_batches(
                 .push_bind(n.logical_size as i64)
                 .push_bind(n.allocated_size as i64)
                 .push_bind(n.file_count as i64)
-                .push_bind(n.dir_count as i64);
+                .push_bind(n.dir_count as i64)
+                .push_bind(n.mtime)
+                .push_bind(n.atime);
         });
         qb.build().execute(&mut *txdb).await?;
     }
@@ -788,14 +841,16 @@ async fn persist_batches(
     let file_chunk = batch_size.max(1).min(max_file_rows_per_stmt.max(1));
     for chunk in files.chunks(file_chunk) {
         let mut qb = QueryBuilder::new(
-            "INSERT INTO files (scan_id, path, parent_path, logical_size, allocated_size) ",
+            "INSERT INTO files (scan_id, path, parent_path, logical_size, allocated_size, mtime, atime) ",
         );
         qb.push_values(chunk, |mut b, f| {
             b.push_bind(&sid)
                 .push_bind(&f.path)
                 .push_bind(f.parent_path.as_deref())
                 .push_bind(f.logical_size as i64)
-                .push_bind(f.allocated_size as i64);
+                .push_bind(f.allocated_size as i64)
+                .push_bind(f.mtime)
+                .push_bind(f.atime);
         });
         qb.build().execute(&mut *txdb).await?;
     }

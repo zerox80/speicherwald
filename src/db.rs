@@ -60,6 +60,8 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
             allocated_size INTEGER NOT NULL,
             file_count INTEGER NOT NULL,
             dir_count INTEGER NOT NULL,
+            mtime INTEGER NULL,
+            atime INTEGER NULL,
             FOREIGN KEY(scan_id) REFERENCES scans(id) ON DELETE CASCADE
         )"#,
     )
@@ -75,11 +77,30 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
             parent_path TEXT NULL,
             logical_size INTEGER NOT NULL,
             allocated_size INTEGER NOT NULL,
+            mtime INTEGER NULL,
+            atime INTEGER NULL,
             FOREIGN KEY(scan_id) REFERENCES scans(id) ON DELETE CASCADE
         )"#,
     )
     .execute(pool)
     .await?;
+
+    sqlx::query("ALTER TABLE nodes ADD COLUMN mtime INTEGER NULL")
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("ALTER TABLE nodes ADD COLUMN atime INTEGER NULL")
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("ALTER TABLE files ADD COLUMN mtime INTEGER NULL")
+        .execute(pool)
+        .await
+        .ok();
+    sqlx::query("ALTER TABLE files ADD COLUMN atime INTEGER NULL")
+        .execute(pool)
+        .await
+        .ok();
 
     // helpful indexes
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at DESC);")

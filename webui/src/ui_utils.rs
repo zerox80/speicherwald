@@ -26,7 +26,15 @@ pub fn fmt_ago_short(ts: Option<i64>) -> String {
     match ts {
         Some(secs) => {
             let now_ms = Date::now();
-            let then_ms = (secs as f64) * 1000.0;
+            let mut then_ms = secs as f64;
+            let abs_val = then_ms.abs();
+            if abs_val >= 1_000_000_000_000_000_000.0 {
+                then_ms /= 1_000_000.0;
+            } else if abs_val >= 1_000_000_000_000_000.0 {
+                then_ms /= 1_000.0;
+            } else if abs_val < 1_000_000_000_000.0 {
+                then_ms *= 1000.0;
+            }
             let diff_ms = if now_ms > then_ms { now_ms - then_ms } else { 0.0 };
             let diff_days = (diff_ms / (1000.0 * 60.0 * 60.0 * 24.0)).floor() as i64;
             if diff_days < 1 {

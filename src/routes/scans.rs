@@ -468,6 +468,7 @@ pub async fn get_tree(
     let mut items: Vec<NodeDto> = Vec::with_capacity(rows.len());
     for r in rows {
         let path: String = r.get("path");
+        let mtime = get_mtime_secs(&path).await;
         let atime = get_atime_secs(&path).await;
         items.push(NodeDto {
             path,
@@ -478,6 +479,7 @@ pub async fn get_tree(
             allocated_size: r.get("allocated_size"),
             file_count: r.get("file_count"),
             dir_count: r.get("dir_count"),
+            mtime,
             atime,
         });
     }
@@ -513,12 +515,14 @@ pub async fn get_top(
         let mut items: Vec<TopItem> = Vec::with_capacity(rows.len());
         for r in rows {
             let p: String = r.get("path");
+            let mtime = get_mtime_secs(&p).await;
             let atime = get_atime_secs(&p).await;
             items.push(TopItem::File {
                 path: p,
                 parent_path: r.get("parent_path"),
                 logical_size: r.get("logical_size"),
                 allocated_size: r.get("allocated_size"),
+                mtime,
                 atime,
             });
         }
@@ -537,6 +541,7 @@ pub async fn get_top(
     let mut items: Vec<TopItem> = Vec::with_capacity(rows.len());
     for r in rows {
         let p: String = r.get("path");
+        let mtime = get_mtime_secs(&p).await;
         let atime = get_atime_secs(&p).await;
         items.push(TopItem::Dir {
             path: p,
@@ -546,6 +551,7 @@ pub async fn get_top(
             allocated_size: r.get("allocated_size"),
             file_count: r.get("file_count"),
             dir_count: r.get("dir_count"),
+            mtime,
             atime,
         });
     }
@@ -766,6 +772,7 @@ pub async fn get_recent(
         let rows = qx.fetch_all(&state.db).await?;
         for r in rows {
             let p: String = r.get("path");
+            let mtime = get_mtime_secs(&p).await;
             let atime = get_atime_secs(&p).await;
             items.push(TopItem::Dir {
                 path: p,
@@ -775,6 +782,7 @@ pub async fn get_recent(
                 allocated_size: r.get("allocated_size"),
                 file_count: r.get("file_count"),
                 dir_count: r.get("dir_count"),
+                mtime,
                 atime,
             });
         }
@@ -801,12 +809,14 @@ pub async fn get_recent(
         let rows = qx.fetch_all(&state.db).await?;
         for r in rows {
             let p: String = r.get("path");
+            let mtime = get_mtime_secs(&p).await;
             let atime = get_atime_secs(&p).await;
             items.push(TopItem::File {
                 path: p,
                 parent_path: r.get("parent_path"),
                 logical_size: r.get("logical_size"),
                 allocated_size: r.get("allocated_size"),
+                mtime,
                 atime,
             });
         }

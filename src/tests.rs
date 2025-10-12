@@ -57,6 +57,8 @@ mod tests {
             allocated_size: 2048,
             file_count: 10,
             dir_count: 5,
+            mtime: Some(1_600_000_000),
+            atime: Some(1_600_000_100),
         };
         assert_eq!(node.path, "C:/test");
         assert_eq!(node.parent_path, Some("C:/".to_string()));
@@ -78,6 +80,8 @@ mod tests {
             logical_size: 900,
             file_count: 10,
             dir_count: 2,
+            mtime: Some(1_600_000_000),
+            atime: Some(1_600_000_050),
         };
         
         let file_item = TopItem::File {
@@ -85,6 +89,8 @@ mod tests {
             parent_path: Some("C:/".to_string()),
             allocated_size: 100,
             logical_size: 90,
+            mtime: Some(1_600_000_010),
+            atime: Some(1_600_000_060),
         };
         
         match dir_item {

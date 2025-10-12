@@ -94,6 +94,30 @@ pub struct DriveInfo {
     pub free_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MovePathRequest {
+    pub source: String,
+    pub destination: String,
+    #[serde(default)]
+    pub remove_source: bool,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MovePathResponse {
+    pub status: String,
+    pub source: String,
+    pub destination: String,
+    pub bytes_to_transfer: u64,
+    pub bytes_moved: u64,
+    pub freed_bytes: u64,
+    pub duration_ms: u128,
+    pub started_at: String,
+    pub finished_at: String,
+    pub warnings: Vec<String>,
+}
+
 impl Default for ScanOptions {
     fn default() -> Self {
         // Calculate concurrency: use half the CPU cores, minimum 2, maximum 16

@@ -1,4 +1,6 @@
+use dioxus::events::FormData;
 use dioxus::prelude::*;
+
 use dioxus_router::prelude::*;
 use js_sys::Date;
 use web_sys::console;
@@ -8,6 +10,22 @@ mod api;
 mod types;
 mod ui_utils;
 use ui_utils::{fmt_bytes, fmt_ago_short, copy_to_clipboard, download_csv, trigger_download, show_toast};
+
+#[derive(Debug, Clone, PartialEq)]
+struct MoveDialogState {
+    source_path: String,
+    source_name: String,
+    logical_size: i64,
+    allocated_size: i64,
+    destination: String,
+    selected_drive: Option<String>,
+    remove_source: bool,
+    overwrite: bool,
+    in_progress: bool,
+    done: bool,
+    result: Option<types::MovePathResponse>,
+    error: Option<String>,
+}
 
 // ----- Routing -----
 #[derive(Routable, Clone, Debug, PartialEq)]
@@ -230,7 +248,7 @@ fn Home() -> Element {
             }
             div { class: "input-group",
                 input { class: "form-control", value: "{new_root}", placeholder: "Root-Pfad (z. B. C:\\ oder \\\\server\\share)",
-                    oninput: move |e| { let mut new_root2 = new_root.clone(); new_root2.set(e.value().clone()); } }
+                    oninput: move |e: Event<FormData>| { let mut new_root2 = new_root.clone(); new_root2.set(e.value().clone()); } }
                 div { class: "input-group-append",
                     button { class: "btn btn-primary", onclick: start_scan, "Scan starten" }
                     button { class: "btn", onclick: reload, "Aktualisieren" }
@@ -293,6 +311,10 @@ fn Scan(id: String) -> Element {
     let list_has_more = use_signal(|| true);
     // Sequence ID to drop stale responses when multiple requests overlap
     let list_req_id = use_signal(|| 0_i64);
+    // Move dialog & drive targets
+    let move_dialog = use_signal(|| None as Option<MoveDialogState>);
+    let drive_targets = use_signal(|| Vec::<types::DriveInfo>::new());
+    let drive_fetch_error = use_signal(|| None as Option<String>);
 
     // Filter und Suche
     let search_query = use_signal(|| String::new());
@@ -347,6 +369,27 @@ fn Scan(id: String) -> Element {
                 let mut kpi = kpi.clone();
                 if let Ok(summary) = api::get_scan(&id).await {
                     kpi.set(Some(summary));
+                }
+            });
+        });
+    }
+
+    // Laufwerksliste einmalig laden (für Move-Dialog)
+    {
+        let drive_targets_state = drive_targets.clone();
+        let drive_err_state = drive_fetch_error.clone();
+        use_effect(move || {
+            let mut drive_targets = drive_targets_state.clone();
+            let mut drive_err = drive_err_state.clone();
+            spawn(async move {
+                match api::list_drives().await {
+                    Ok(dr) => {
+                        drive_targets.set(dr.items);
+                        drive_err.set(None);
+                    }
+                    Err(e) => {
+                        drive_err.set(Some(e));
+                    }
                 }
             });
         });
@@ -1316,6 +1359,7 @@ fn Scan(id: String) -> Element {
                     }, "Pfad" }
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
+                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
                 } }
                 tbody {
                     { let mut rows = tree_items.read().clone();
@@ -1337,7 +1381,19 @@ fn Scan(id: String) -> Element {
                         let bar_width = format!("width:{:.1}%;", percent);
                         let p_nav = p.clone();
                         let p_copy = p.clone();
+                        let p_for_move = p.clone();
+                        let move_signal = move_dialog.clone();
                         let bar_class = if n.is_dir { "bar-fill-indigo" } else { "bar-fill-green" };
+                        let item_name = p
+                            .rsplit_once(['\\', '/'])
+                            .map(|(_, tail)| tail.to_string())
+                            .unwrap_or_else(|| {
+                                p_for_move
+                                    .trim_end_matches(['\\', '/'])
+                                    .rsplit_once(['\\', '/'])
+                                    .map(|(_, tail)| tail.to_string())
+                                    .unwrap_or_else(|| p_for_move.clone())
+                            });
                         rsx!{ tr {
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
@@ -1357,7 +1413,31 @@ fn Scan(id: String) -> Element {
                                 }
                             }
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                button { class: "btn", onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
+                                div { style: "display:flex;gap:8px;flex-wrap:wrap;",
+                                    button { class: "btn", onclick: {
+                                            let move_dialog = move_signal.clone();
+                                            let path = p_for_move.clone();
+                                            let name = item_name.clone();
+                                            move |_| {
+                                                let mut dlg = move_dialog.clone();
+                                                dlg.set(Some(MoveDialogState {
+                                                    source_path: path.clone(),
+                                                    source_name: name.clone(),
+                                                    logical_size: logical,
+                                                    allocated_size: alloc,
+                                                    destination: String::new(),
+                                                    selected_drive: None,
+                                                    remove_source: true,
+                                                    overwrite: false,
+                                                    in_progress: false,
+                                                    done: false,
+                                                    result: None,
+                                                    error: None,
+                                                }));
+                                            }
+                                        }, "Verschieben" }
+                                    button { class: "btn", onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
+                                }
                             }
                         } }
                     }) }
@@ -1733,6 +1813,9 @@ fn Scan(id: String) -> Element {
                                 let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
                                 let bar_width = format!("width:{:.1}%;", percent);
                                 let recent = mtime;
+                                let move_signal = move_dialog.clone();
+                                let path_for_dialog = p.clone();
+                                let name_for_dialog = name.clone();
                                 rsx!{ tr {
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
                                         let hist = nav_history.read().clone();
@@ -1752,13 +1835,43 @@ fn Scan(id: String) -> Element {
                                             div { class: "bar-fill-blue", style: "{bar_width}" }
                                         }
                                     }
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                        div { style: "display:flex;gap:8px;flex-wrap:wrap;",
+                                            button { class: "btn", onclick: {
+                                                    let signal = move_signal.clone();
+                                                    let path_value = path_for_dialog.clone();
+                                                    let label_value = name_for_dialog.clone();
+                                                    move |_| {
+                                                        let mut dlg = signal.clone();
+                                                        dlg.set(Some(MoveDialogState {
+                                                            source_path: path_value.clone(),
+                                                            source_name: label_value.clone(),
+                                                            logical_size: logical,
+                                                            allocated_size: alloc,
+                                                            destination: String::new(),
+                                                            selected_drive: None,
+                                                            remove_source: true,
+                                                            overwrite: false,
+                                                            in_progress: false,
+                                                            done: false,
+                                                            result: None,
+                                                            error: None,
+                                                        }));
+                                                    }
+                                                }, "Verschieben" }
+                                            button { class: "btn", onclick: move |_| { copy_to_clipboard(path_for_dialog.clone()); }, "Kopieren" }
+                                        }
+                                    }
                                 } }
                             }
-                            types::ListItem::File { name, allocated_size, logical_size, mtime, .. } => {
+                            types::ListItem::File { name, path, allocated_size, logical_size, mtime, .. } => {
                                 let alloc = allocated_size; let logical = logical_size;
                                 let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
                                 let bar_width = format!("width:{:.1}%;", percent);
                                 let recent = mtime;
+                                let move_signal = move_dialog.clone();
+                                let path_for_dialog = path.clone();
+                                let name_for_dialog = name.clone();
                                 rsx!{ tr {
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name}" }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
@@ -1770,6 +1883,33 @@ fn Scan(id: String) -> Element {
                                             div { class: "bar-fill-green", style: "{bar_width}" }
                                         }
                                     }
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                        div { style: "display:flex;gap:8px;flex-wrap:wrap;",
+                                            button { class: "btn", onclick: {
+                                                    let signal = move_signal.clone();
+                                                    let path_value = path_for_dialog.clone();
+                                                    let label_value = name_for_dialog.clone();
+                                                    move |_| {
+                                                        let mut dlg = signal.clone();
+                                                        dlg.set(Some(MoveDialogState {
+                                                            source_path: path_value.clone(),
+                                                            source_name: label_value.clone(),
+                                                            logical_size: logical,
+                                                            allocated_size: alloc,
+                                                            destination: String::new(),
+                                                            selected_drive: None,
+                                                            remove_source: true,
+                                                            overwrite: false,
+                                                            in_progress: false,
+                                                            done: false,
+                                                            result: None,
+                                                            error: None,
+                                                        }));
+                                                    }
+                                                }, "Verschieben" }
+                                            button { class: "btn", onclick: move |_| { copy_to_clipboard(path_for_dialog.clone()); }, "Kopieren" }
+                                        }
+                                    }
                                 } }
                             }
                         }
@@ -1777,6 +1917,295 @@ fn Scan(id: String) -> Element {
                 }
             }  // table close
         }  // section close
+        { move_dialog.read().as_ref().map(|dlg| move_dialog_view(dlg, move_dialog.clone(), drive_targets.clone(), drive_fetch_error.clone())) }
+    }
+}
+
+fn move_dialog_view(
+    dialog: &MoveDialogState,
+    move_signal: Signal<Option<MoveDialogState>>,
+    drive_targets: Signal<Vec<types::DriveInfo>>,
+    drive_error: Signal<Option<String>>,
+) -> Element {
+    let drives_snapshot = drive_targets.read().clone();
+    let drive_error_val = drive_error.read().clone();
+    let is_done = dialog.done;
+    let is_running = dialog.in_progress;
+    let destination_blank = dialog.destination.trim().is_empty();
+    let transfer_size_txt = fmt_bytes(dialog.allocated_size);
+    let estimated_gain_txt = if dialog.remove_source {
+        fmt_bytes(dialog.allocated_size)
+    } else {
+        "0 B".to_string()
+    };
+
+    rsx! {
+        div { style: "position:fixed;top:0;left:0;width:100vw;height:100vh;padding:16px;display:flex;align-items:center;justify-content:center;background:rgba(6,10,18,0.78);backdrop-filter:blur(2px);z-index:2000;",
+            div { style: "background:#0f1117;border:1px solid #1f2937;border-radius:16px;padding:24px;max-width:640px;width:100%;color:#e5e7eb;box-shadow:0 18px 34px rgba(0,0,0,0.45);display:flex;flex-direction:column;gap:16px;max-height:90vh;overflow:auto;",
+                div { style: "display:flex;justify-content:space-between;align-items:center;gap:12px;",
+                    h3 { style: "margin:0;font-size:20px;", "Pfad verschieben" }
+                    button { class: "btn", onclick: {
+                            let close_signal = move_signal.clone();
+                            move |_| {
+                                let mut signal = close_signal.clone();
+                                signal.set(None);
+                            }
+                        }, "Schliessen" }
+                }
+                div { style: "display:flex;flex-direction:column;gap:6px;",
+                    span { style: "color:#9aa0a6;font-size:13px;", "Quelle" }
+                    code { style: "font-size:13px;background:#111827;border:1px solid #1f2937;border-radius:6px;padding:6px;word-break:break-all;", "{dialog.source_path}" }
+                }
+                div { style: "display:flex;flex-direction:column;gap:6px;",
+                    span { style: "color:#9aa0a6;font-size:13px;", "Ziel" }
+                    input {
+                        class: "form-control",
+                        value: "{dialog.destination}",
+                        placeholder: "\\\\server\\share\\ordner",
+                        style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px;",
+                        oninput: {
+                            let move_signal_dest = move_signal.clone();
+                            let snapshot = dialog.clone();
+                            move |e: Event<FormData>| {
+                                let mut next = snapshot.clone();
+                                next.destination = e.value();
+                                next.error = None;
+                                let mut signal = move_signal_dest.clone();
+                                signal.set(Some(next));
+                            }
+                        }
+                    }
+                    span { style: "color:#6b7280;font-size:12px;", "Tipp: Waehle ein Laufwerk oder trage einen UNC Pfad ein." }
+                }
+                { (!drives_snapshot.is_empty()).then(|| rsx!{
+                    div { style: "display:flex;flex-direction:column;gap:6px;",
+                        span { style: "color:#9aa0a6;font-size:13px;", "Schnellwahl Laufwerk" }
+                        div { style: "display:flex;flex-wrap:wrap;gap:8px;",
+                            { drives_snapshot.iter().map(|drive| {
+                                let drive_path = drive.path.clone();
+                                let free_fmt = fmt_bytes((drive.free_bytes.min(i64::MAX as u64)) as i64);
+                                let is_selected = dialog.selected_drive.as_ref().map(|p| p == &drive_path).unwrap_or(false);
+                                let button_style = if is_selected {
+                                    "background:#2563eb;color:#fff;border:1px solid #60a5fa;border-radius:6px;padding:6px 10px;cursor:pointer;"
+                                } else {
+                                    "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:6px 10px;cursor:pointer;"
+                                };
+                                let move_signal_drive = move_signal.clone();
+                                let dialog_snapshot = dialog.clone();
+                                let dest_suggestion = if drive_path.ends_with('\\') || drive_path.ends_with('/') {
+                                    format!("{}{}", drive_path, dialog_snapshot.source_name)
+                                } else {
+                                    format!("{}\\{}", drive_path, dialog_snapshot.source_name)
+                                };
+                                rsx!{
+                                    button { style: "{button_style}", onclick: move |_| {
+                                            let mut next = dialog_snapshot.clone();
+                                            let previously_selected = next.selected_drive.clone();
+                                            next.selected_drive = Some(drive_path.clone());
+                                            if next.destination.trim().is_empty() || previously_selected.as_ref() != Some(&drive_path) {
+                                                next.destination = dest_suggestion.clone();
+                                            }
+                                            next.error = None;
+                                            let mut signal = move_signal_drive.clone();
+                                            signal.set(Some(next));
+                                        }, "{drive_path} (frei: {free_fmt})" }
+                                }
+                            }) }
+                        }
+                    }
+                }) }
+                { drive_error_val.as_ref().map(|err| rsx!{
+                    div { style: "padding:10px;background:#331414;border:1px solid #7f1d1d;border-radius:8px;color:#fca5a5;font-size:13px;",
+                        "Laufwerke konnten nicht aktualisiert werden: {err}"
+                    }
+                }) }
+                div { style: "display:flex;flex-direction:column;gap:8px;",
+                    label { style: "display:flex;gap:8px;align-items:center;",
+                        input {
+                            r#type: "checkbox",
+                            checked: dialog.remove_source,
+                            oninput: {
+                                let move_signal_remove = move_signal.clone();
+                                let snapshot = dialog.clone();
+                                move |_| {
+                                    let mut next = snapshot.clone();
+                                    next.remove_source = !snapshot.remove_source;
+                                    next.error = None;
+                                    let mut signal = move_signal_remove.clone();
+                                    signal.set(Some(next));
+                                }
+                            }
+                        }
+                        span { "Quelle nach Abschluss loeschen" }
+                    }
+                    label { style: "display:flex;gap:8px;align-items:center;",
+                        input {
+                            r#type: "checkbox",
+                            checked: dialog.overwrite,
+                            oninput: {
+                                let move_signal_overwrite = move_signal.clone();
+                                let snapshot = dialog.clone();
+                                move |_| {
+                                    let mut next = snapshot.clone();
+                                    next.overwrite = !snapshot.overwrite;
+                                    next.error = None;
+                                    let mut signal = move_signal_overwrite.clone();
+                                    signal.set(Some(next));
+                                }
+                            }
+                        }
+                        span { "Vorhandene Dateien am Ziel ueberschreiben" }
+                    }
+                }
+                div { style: "background:#11131c;border:1px solid #1f2533;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px;font-size:13px;",
+                    span { "Transfer: {transfer_size_txt}" }
+                    span { "Geschaetzter Platzgewinn: {estimated_gain_txt}" }
+                }
+                { if is_running {
+                    Some(rsx!{
+                        div { style: "display:flex;gap:8px;align-items:center;color:#60a5fa;font-size:13px;",
+                            span { class: "spinner" }
+                            span { "Verschiebe Daten ..." }
+                        }
+                    })
+                } else {
+                    None
+                } }
+                { dialog.error.as_ref().map(|err| rsx!{
+                    div { style: "padding:10px;background:#331414;border:1px solid #7f1d1d;border-radius:8px;color:#fca5a5;font-size:13px;",
+                        "Fehler: {err}"
+                    }
+                }) }
+                { dialog.result.as_ref().map(|res| {
+                    let freed_fmt = fmt_bytes((res.freed_bytes.min(i64::MAX as u64)) as i64);
+                    let moved_fmt = fmt_bytes((res.bytes_moved.min(i64::MAX as u64)) as i64);
+                    let total_fmt = fmt_bytes((res.bytes_to_transfer.min(i64::MAX as u64)) as i64);
+                    let duration_sec = (res.duration_ms as f64) / 1000.0;
+                    let duration_txt = format!("{:.1} s", duration_sec);
+                    let warnings = res.warnings.clone();
+                    rsx!{
+                        div { style: "padding:12px;background:#172031;border:1px solid #22304b;border-radius:10px;display:flex;flex-direction:column;gap:6px;font-size:13px;",
+                            span { style: "color:#60a5fa;", "Status: {res.status}" }
+                            span { "Daten verschoben: {moved_fmt} von {total_fmt}" }
+                            span { "Freier Speicher: {freed_fmt}" }
+                            span { "Dauer: {duration_txt}" }
+                            { if !warnings.is_empty() {
+                                Some(rsx!{
+                                    div { style: "display:flex;flex-direction:column;gap:4px;",
+                                        span { style: "color:#facc15;", "Hinweise" }
+                                        ul { style: "margin:0 0 0 16px;padding:0;display:flex;flex-direction:column;gap:4px;",
+                                            { warnings.iter().map(|w| rsx!{ li { style: "list-style:disc;color:#facc15;", "{w}" } }) }
+                                        }
+                                    }
+                                })
+                            } else { None } }
+                        }
+                    }
+                }) }
+                span { style: "color:#6b7280;font-size:12px;", "Hinweis: Tabellen aktualisieren sich nach einem neuen Scan." }
+                div { style: "display:flex;justify-content:flex-end;gap:12px;margin-top:4px;",
+                    button {
+                        class: "btn",
+                        style: btn_style(),
+                        disabled: is_running,
+                        onclick: {
+                            let close_signal = move_signal.clone();
+                            move |_| {
+                                let mut signal = close_signal.clone();
+                                signal.set(None);
+                            }
+                        },
+                        { if is_done { "Schliessen" } else { "Abbrechen" } }
+                    }
+                    { (!is_done).then(|| rsx!{
+                        button {
+                            class: "btn btn-primary",
+                            style: btn_primary_style(),
+                            disabled: is_running || destination_blank,
+                            onclick: {
+                                let move_signal_start = move_signal.clone();
+                                let drives_signal_async = drive_targets.clone();
+                                let drive_error_signal_async = drive_error.clone();
+                                let dialog_snapshot = dialog.clone();
+                                move |_| {
+                                    if dialog_snapshot.in_progress {
+                                        return;
+                                    }
+
+                                    let mut inflight = dialog_snapshot.clone();
+                                    inflight.in_progress = true;
+                                    inflight.error = None;
+                                    inflight.done = false;
+                                    inflight.result = None;
+
+                                    let request = types::MovePathRequest {
+                                        source: dialog_snapshot.source_path.clone(),
+                                        destination: dialog_snapshot.destination.trim().to_string(),
+                                        remove_source: dialog_snapshot.remove_source,
+                                        overwrite: dialog_snapshot.overwrite,
+                                    };
+
+                                    let mut signal = move_signal_start.clone();
+                                    signal.set(Some(inflight.clone()));
+
+                                    let mut drive_error_signal = drive_error_signal_async.clone();
+                                    drive_error_signal.set(None);
+
+                                    wasm_bindgen_futures::spawn_local({
+                                        let move_signal_async = move_signal_start.clone();
+                                        let drives_signal_async = drives_signal_async.clone();
+                                        let drive_error_signal_async = drive_error_signal_async.clone();
+                                        let inflight_state = inflight.clone();
+                                        let request = request.clone();
+
+                                        async move {
+                                            match api::move_path(&request).await {
+                                                Ok(resp) => {
+                                                    let mut updated = inflight_state.clone();
+                                                    updated.in_progress = false;
+                                                    updated.done = true;
+                                                    updated.result = Some(resp);
+
+                                                    let mut move_signal_async = move_signal_async.clone();
+                                                    move_signal_async.set(Some(updated));
+
+                                                    show_toast("Pfad wurde verschoben");
+
+                                                    match api::list_drives().await {
+                                                        Ok(dr) => {
+                                                            let mut drives_signal_async = drives_signal_async.clone();
+                                                            drives_signal_async.set(dr.items);
+
+                                                            let mut drive_error_signal_async = drive_error_signal_async.clone();
+                                                            drive_error_signal_async.set(None);
+                                                        }
+                                                        Err(err) => {
+                                                            let mut drive_error_signal_async = drive_error_signal_async.clone();
+                                                            drive_error_signal_async.set(Some(err));
+                                                        }
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    let mut updated = inflight_state.clone();
+                                                    updated.in_progress = false;
+                                                    updated.error = Some(err.clone());
+
+                                                    let mut move_signal_async = move_signal_async.clone();
+                                                    move_signal_async.set(Some(updated));
+
+                                                    show_toast(&format!("Fehler beim Verschieben: {}", err));
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            },
+                            "Verschieben starten"
+                        }
+                    }) }
+                }
+            }
+        }
     }
 }
 

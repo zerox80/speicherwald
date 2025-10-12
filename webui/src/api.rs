@@ -152,6 +152,19 @@ pub async fn search_scan(id: &str, q: &SearchQuery) -> Result<SearchResult, Stri
 
 fn map_net(e: reqwasm::Error) -> String { format!("Netzwerkfehler: {}", e) }
 
+pub async fn move_path(req: &MovePathRequest) -> Result<MovePathResponse, String> {
+    let resp = reqwasm::http::Request::post(&url("/paths/move"))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(req).unwrap())
+        .send()
+        .await
+        .map_err(map_net)?;
+    if !resp.ok() {
+        return Err(resp.text().await.unwrap_or_else(|_| "HTTP Fehler".into()));
+    }
+    resp.json().await.map_err(map_net)
+}
+
 // SSE helper: open EventSource and wire message callback. Returns the EventSource to be kept alive.
 pub fn sse_attach<F>(id: &str, mut on_message: F) -> Result<EventSource, String>
 where F: 'static + FnMut(ScanEvent) {

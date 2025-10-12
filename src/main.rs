@@ -170,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/scans/{id}/export", get(routes::export::export_scan))
         .route("/scans/{id}/statistics", get(routes::export::export_statistics))
         .route("/drives", get(routes::drives::list_drives))
+        .route("/paths/move", post(routes::paths::move_path))
         .fallback_service(static_ui_service)
         .with_state(state)
         // Globales Body-Limit – schützt vor übergroßen Requests (configurable via env)

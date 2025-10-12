@@ -31,6 +31,7 @@ impl AppState {
             ("/scans", 60, 60),             // 60 scans per minute
             ("/scans/:id/search", 600, 60), // 600 searches per minute
             ("/drives", 120, 60),           // 120 drive lists per minute
+            ("/paths/move", 30, 60),        // 30 move operations per minute
         ]);
 
         Self {

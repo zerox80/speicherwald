@@ -702,8 +702,14 @@ pub async fn get_list(
                         (0, 0, None, None)
                     };
 
-                    let mtime = db_mtime.or_else(|| get_mtime_secs(&root).await);
-                    let atime = db_atime.or_else(|| get_atime_secs(&root).await);
+                    let mtime = match db_mtime {
+                        Some(ts) => Some(ts),
+                        None => get_mtime_secs(&root).await,
+                    };
+                    let atime = match db_atime {
+                        Some(ts) => Some(ts),
+                        None => get_atime_secs(&root).await,
+                    };
 
                     let name = std::path::Path::new(&root)
                         .file_name()

@@ -95,3 +95,27 @@ pub enum ScanEvent {
     Cancelled,
     Failed { message: String },
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct MovePathRequest {
+    pub source: String,
+    pub destination: String,
+    #[serde(default)]
+    pub remove_source: bool,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct MovePathResponse {
+    pub status: String,
+    pub source: String,
+    pub destination: String,
+    pub bytes_to_transfer: u64,
+    pub bytes_moved: u64,
+    pub freed_bytes: u64,
+    pub duration_ms: u128,
+    pub started_at: String,
+    pub finished_at: String,
+    pub warnings: Vec<String>,
+}

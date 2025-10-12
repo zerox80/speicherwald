@@ -1203,18 +1203,18 @@ fn Scan(id: String) -> Element {
                         let mut rows = top_items.read().clone();
                         // Sort key
                         rows.sort_by_key(|it| match it {
-                            types::TopItem::Dir { allocated_size, logical_size, mtime, atime, .. } => match top_sort.read().as_str() {
+                            types::TopItem::Dir { allocated_size, logical_size, atime, .. } => match top_sort.read().as_str() {
                                 "logical" => *logical_size,
                                 "name" => 0,
                                 "type" => 0,
-                                "accessed" => mtime.unwrap_or(atime.unwrap_or(0)),
+                                "accessed" => atime.unwrap_or(0),
                                 _ => *allocated_size,
                             },
-                            types::TopItem::File { allocated_size, logical_size, mtime, atime, .. } => match top_sort.read().as_str() {
+                            types::TopItem::File { allocated_size, logical_size, atime, .. } => match top_sort.read().as_str() {
                                 "logical" => *logical_size,
                                 "name" => 0,
                                 "type" => 1,
-                                "accessed" => mtime.unwrap_or(atime.unwrap_or(0)),
+                                "accessed" => atime.unwrap_or(0),
                                 _ => *allocated_size,
                             },
                         });
@@ -1229,10 +1229,10 @@ fn Scan(id: String) -> Element {
                         if current_order == "desc" { rows.reverse(); }
                         rows.into_iter().map(|it| {
                             match it {
-                                types::TopItem::Dir { path, allocated_size, logical_size, mtime, atime, .. } => {
+                                types::TopItem::Dir { path, allocated_size, logical_size, atime, .. } => {
                                     let p_nav = path.clone();
                                     let p_copy = path.clone();
-                                    let recent = mtime.or(atime);
+                                    let recent = atime;
                                     rsx!{ tr {
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
@@ -1251,8 +1251,8 @@ fn Scan(id: String) -> Element {
                                         }
                                     } }
                                 },
-                                types::TopItem::File { path, allocated_size, logical_size, mtime, atime, .. } => {
-                                    let recent = mtime.or(atime);
+                                types::TopItem::File { path, allocated_size, logical_size, atime, .. } => {
+                                    let recent = atime;
                                     rsx!{ tr {
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
@@ -1325,7 +1325,7 @@ fn Scan(id: String) -> Element {
                           "logical" => n.logical_size,
                           "name" => 0,
                           "type" => if n.is_dir { 0 } else { 1 },
-                          "accessed" => n.mtime.or(n.atime).unwrap_or(0),
+                          "accessed" => n.atime.unwrap_or(0),
                           _ => n.allocated_size,
                       });
                       if current_sort == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
@@ -1340,7 +1340,7 @@ fn Scan(id: String) -> Element {
                         let bar_class = if n.is_dir { "bar-fill-indigo" } else { "bar-fill-green" };
                         rsx!{ tr {
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime.or(n.atime))}" }
+                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.atime)}" }
                             td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
                             td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
@@ -1728,11 +1728,11 @@ fn Scan(id: String) -> Element {
                       
                       filtered.into_iter().map(|it| {
                         match it {
-                            types::ListItem::Dir { name, path, allocated_size, logical_size, mtime, atime, .. } => {
+                            types::ListItem::Dir { name, path, allocated_size, logical_size, atime, .. } => {
                                 let alloc = allocated_size; let logical = logical_size; let p = path.clone();
                                 let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
                                 let bar_width = format!("width:{:.1}%;", percent);
-                                let recent = mtime.or(atime);
+                                let recent = atime;
                                 rsx!{ tr {
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
                                         let hist = nav_history.read().clone();
@@ -1754,11 +1754,11 @@ fn Scan(id: String) -> Element {
                                     }
                                 } }
                             }
-                            types::ListItem::File { name, allocated_size, logical_size, mtime, atime, .. } => {
+                            types::ListItem::File { name, allocated_size, logical_size, atime, .. } => {
                                 let alloc = allocated_size; let logical = logical_size;
                                 let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
                                 let bar_width = format!("width:{:.1}%;", percent);
-                                let recent = mtime.or(atime);
+                                let recent = atime;
                                 rsx!{ tr {
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name}" }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }

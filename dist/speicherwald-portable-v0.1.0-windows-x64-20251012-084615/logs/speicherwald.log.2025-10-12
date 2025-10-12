@@ -1,0 +1,4 @@
+2025-10-12T07:46:28.674281Z  INFO speicherwald: Creating SQLite database at sqlite:///C:/Users/rujbin1/AppData/Local/SpeicherWald/speicherwald.db
+2025-10-12T07:46:28.686545Z  INFO speicherwald: SpeicherWald listening on http://127.0.0.1:20512
+2025-10-12T07:46:58.248489Z  INFO speicherwald: Creating SQLite database at sqlite:///C:/Users/rujbin1/AppData/Local/SpeicherWald/speicherwald.db
+2025-10-12T07:46:58.262063Z  INFO speicherwald: SpeicherWald listening on http://127.0.0.1:46020

@@ -20,7 +20,7 @@ pub enum Route {
 
 pub fn main() {
     console_error_panic_hook::set_once();
-    dioxus::launch(app);
+    dioxus_web::launch::launch(app, vec![], Default::default());
 }
 
 fn app() -> Element {

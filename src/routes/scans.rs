@@ -10,7 +10,7 @@ use axum::{
 use futures::Stream;
 use globset::Glob;
 use serde_json::json;
-use sqlx::Row;
+use sqlx::{QueryBuilder, Row};
 use tokio::{sync::broadcast, task::JoinHandle};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -20,7 +20,7 @@ use crate::{
     error::{AppError, AppResult},
     middleware::ip::extract_ip_from_headers,
     middleware::validation::{validate_file_path, validate_scan_options},
-    scanner,
+    scanner::{self, NodeRecord},
     state::{AppState, JobHandle},
     types::{
         CreateScanRequest, CreateScanResponse, ListItem, NodeDto, ScanEvent, ScanOptions, ScanSummary,
@@ -64,14 +64,22 @@ pub async fn create_scan(
     }
 
     let id = Uuid::new_v4();
-    let (tx, _rx) = broadcast::channel::<ScanEvent>(256);
+    // Larger broadcast channel to prevent dropped messages in fast scans
+    // Use configurable channel size with safe bounds
+    let channel_size = std::env::var("SPEICHERWALD_EVENT_CHANNEL_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(4096)
+        .clamp(512, 16384);
+    let (tx, _rx) = broadcast::channel::<ScanEvent>(channel_size);
     let cancel = CancellationToken::new();
 
     // Metrics: count scan start
     state.metrics.inc_scans_started();
 
     // Persist initial scan row
-    let root_paths_json = serde_json::to_string(&req.root_paths).unwrap();
+    let root_paths_json = serde_json::to_string(&req.root_paths)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize root_paths: {}", e)))?;
     // Apply config defaults if fields are None
     let d = &state.config.scan_defaults;
     // Normalize and validate exclude patterns early (improves cache hit-rate and avoids late failures)
@@ -97,7 +105,8 @@ pub async fn create_scan(
         max_depth: req.max_depth.or(d.max_depth),
         concurrency: req.concurrency.or(d.concurrency),
     };
-    let options_json = serde_json::to_string(&options).unwrap();
+    let options_json = serde_json::to_string(&options)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize options: {}", e)))?;
 
     sqlx::query(
         r#"INSERT INTO scans (id, status, root_paths, options)
@@ -151,7 +160,8 @@ pub async fn create_scan(
                     total_logical_size: summary.total_logical_size,
                     total_allocated_size: summary.total_allocated_size,
                 });
-                let _ = sqlx::query(
+                // FIX Bug #59 - Log DB update errors
+                if let Err(e) = sqlx::query(
                     r#"UPDATE scans SET status='done', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
                         total_logical_size=?1, total_allocated_size=?2, dir_count=?3, file_count=?4, warning_count=?5
                         WHERE id=?6"#
@@ -162,25 +172,32 @@ pub async fn create_scan(
                 .bind(summary.total_files as i64)
                 .bind(summary.warnings as i64)
                 .bind(id.to_string())
-                .execute(&db).await;
+                .execute(&db).await {
+                    tracing::error!("Failed to update scan status to done: {}", e);
+                }
             }
             Err(e) => {
                 if cancel_child.is_cancelled() {
                     let _ = tx_clone.send(ScanEvent::Cancelled);
-                    let _ = sqlx::query(
+                    // FIX Bug #60 - Log DB update errors
+                    if let Err(e) = sqlx::query(
                         r#"UPDATE scans SET status='canceled', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1"#
                     )
                     .bind(id.to_string())
-                    .execute(&db).await;
+                    .execute(&db).await {
+                        tracing::error!("Failed to update scan status to canceled: {}", e);
+                    }
                 } else {
                     // Metrics: failed scan
                     metrics.inc_scans_failed();
                     let _ = tx_clone.send(ScanEvent::Failed { message: format!("{}", e) });
-                    let _ = sqlx::query(
+                    if let Err(e) = sqlx::query(
                         r#"UPDATE scans SET status='failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1"#
                     )
                     .bind(id.to_string())
-                    .execute(&db).await;
+                    .execute(&db).await {
+                        tracing::error!("Failed to update scan status to failed: {}", e);
+                    }
                 }
             }
         }
@@ -205,8 +222,9 @@ pub async fn create_scan(
         .bind(id.to_string())
         .fetch_one(&state.db)
         .await
-        .map(|row| row.get::<String, _>("started_at"))
-        .unwrap_or_else(|_| chrono_now_utc());
+        .ok()
+        .and_then(|row| row.try_get::<String, _>("started_at").ok())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
     let resp = CreateScanResponse { id, status: "running".into(), started_at: started_at_iso };
     Ok((StatusCode::ACCEPTED, Json(resp)).into_response())
 }
@@ -219,15 +237,21 @@ pub async fn list_scans(State(state): State<AppState>) -> AppResult<impl IntoRes
                    COALESCE(dir_count,0) AS dir_count,
                    COALESCE(file_count,0) AS file_count,
                    COALESCE(warning_count,0) AS warning_count
-            FROM scans ORDER BY started_at DESC"#,
+            FROM scans ORDER BY started_at DESC LIMIT 1000"#,
     )
     .fetch_all(&state.db)
     .await?;
 
     let items: Vec<ScanSummary> = rows
         .into_iter()
-        .map(|r| ScanSummary {
-            id: Uuid::parse_str(r.get::<String, _>("id").as_str()).unwrap(),
+        .filter_map(|r| {
+            let id_str = r.get::<String, _>("id");
+            // Validate UUID before including in response - reject invalid entries
+            Uuid::parse_str(&id_str).map_err(|e| {
+                tracing::error!("Invalid UUID in scans table: {} - {} (data corruption)", id_str, e);
+                e
+            }).ok().map(|id| ScanSummary {
+                id,
             status: r.get::<String, _>("status"),
             started_at: r.get::<Option<String>, _>("started_at"),
             finished_at: r.get::<Option<String>, _>("finished_at"),
@@ -236,6 +260,7 @@ pub async fn list_scans(State(state): State<AppState>) -> AppResult<impl IntoRes
             dir_count: r.get::<i64, _>("dir_count"),
             file_count: r.get::<i64, _>("file_count"),
             warning_count: r.get::<i64, _>("warning_count"),
+            })
         })
         .collect();
 
@@ -286,22 +311,28 @@ pub async fn cancel_scan(
 ) -> AppResult<impl IntoResponse> {
     let purge = q.purge.unwrap_or(false);
 
-    // Cancel if running
-    {
+    // FIX Bug #12 - Race condition: check status first, then cancel
+    let was_running = {
         let mut jobs = state.jobs.write().await;
         if let Some(handle) = jobs.remove(&id) {
             handle.cancel.cancel();
-            if !purge {
-                let _ = sqlx::query(
-                    r#"UPDATE scans SET status='canceled', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1 AND status='running'"#
-                )
-                .bind(id.to_string())
-                .execute(&state.db).await;
-            }
-        } else if !purge {
-            // Not running: act idempotently
-            return Ok((StatusCode::NO_CONTENT, ""));
+            drop(jobs); // Release lock before any async operations
+            true
+        } else {
+            false
         }
+    };
+    
+    // Update DB after releasing lock to avoid deadlock
+    if was_running && !purge {
+        let _ = sqlx::query(
+            r#"UPDATE scans SET status='canceled', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1 AND status='running'"#
+        )
+        .bind(id.to_string())
+        .execute(&state.db).await;
+    } else if !was_running && !purge {
+        // Not running: act idempotently
+        return Ok((StatusCode::NO_CONTENT, ""));
     }
 
     if purge {
@@ -316,16 +347,27 @@ pub async fn scan_events(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>> {
+    // FIX Bug #14 - Race condition: ensure job exists before subscribing
     let rx = {
         let jobs = state.jobs.read().await;
         if let Some(handle) = jobs.get(&id) {
-            handle.sender.subscribe()
+            let rx = handle.sender.subscribe();
+            drop(jobs); // Release lock
+            rx
         } else {
             return Err(AppError::NotFound("scan not running".into()));
         }
     };
 
-    let stream = BroadcastStream::new(rx).filter_map(|res| res.ok()).map(|ev| {
+    let stream = BroadcastStream::new(rx).filter_map(move |res| {
+        match res {
+            Ok(event) => Some(event),
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                tracing::warn!("SSE stream lagged by {} messages for scan {}", n, id);
+                None
+            }
+        }
+    }).map(|ev| {
         let data = serde_json::to_string(&ev)
             .unwrap_or_else(|_| json!({"type":"warning","message":"serialization error"}).to_string());
         Ok::<Event, std::convert::Infallible>(Event::default().data(data))
@@ -336,10 +378,34 @@ pub async fn scan_events(
     ))
 }
 
-fn chrono_now_utc() -> String {
-    // Match DB default format (UTC ISO-8601). A 'Z' suffix indicates UTC.
-    // The exact seconds precision suffices for our API and logs.
-    chrono::Utc::now().to_rfc3339()
+// Removed - inline usage is clearer and avoids potential timezone issues
+
+// FIX Bug #64 - Add missing helper functions
+async fn get_subtree_totals(root: &str, db: &sqlx::SqlitePool) -> Result<(i64, i64), sqlx::Error> {
+    // Get total files and dirs in subtree (recursive)
+    let scan_result = sqlx::query(
+        "SELECT COALESCE(SUM(file_count), 0) as total_files, COALESCE(COUNT(*), 0) as total_dirs 
+         FROM nodes WHERE path LIKE ?1 || '%' AND is_dir = 1"
+    )
+    .bind(root)
+    .fetch_one(db)
+    .await?;
+    
+    let total_files: i64 = scan_result.try_get("total_files").unwrap_or(0);
+    let total_dirs: i64 = scan_result.try_get("total_dirs").unwrap_or(0);
+    Ok((total_files, total_dirs))
+}
+
+async fn get_files_in_dir(dir: &str, db: &sqlx::SqlitePool) -> Result<i64, sqlx::Error> {
+    // Get count of files directly in this directory (non-recursive)
+    let result = sqlx::query(
+        "SELECT COUNT(*) as cnt FROM files WHERE parent_path = ?1"
+    )
+    .bind(dir)
+    .fetch_one(db)
+    .await?;
+    
+    Ok(result.try_get("cnt").unwrap_or(0))
 }
 
 // Async helper to fetch mtime (seconds since epoch) without blocking the Tokio runtime
@@ -373,11 +439,20 @@ async fn get_atime_secs(path: &str) -> Option<i64> {
 }
 
 fn normalize_query_path(p: &str) -> String {
-    let mut s = p.replace('/', "\\");
-    if s.len() == 2 && s.chars().nth(1) == Some(':') {
-        s.push('\\');
+    #[cfg(windows)]
+    {
+        let mut s = p.replace('/', "\\");
+        // Add trailing backslash to drive letters (C: -> C:\)
+        if s.len() == 2 && s.chars().nth(1) == Some(':') {
+            s.push('\\');
+        }
+        s
     }
-    s
+    #[cfg(not(windows))]
+    {
+        // On Unix, keep forward slashes
+        p.to_string()
+    }
 }
 
 // ---------------------- TREE ENDPOINT ----------------------
@@ -399,6 +474,14 @@ pub async fn get_tree(
     let mut base_depth: Option<i64> = None;
     if let Some(ref p) = q.path {
         let p_norm = normalize_query_path(p);
+        // FIX Bug #50 - Validate path BEFORE normalization
+        if p.len() > 4096 {
+            return Err(AppError::BadRequest("Path too long".into()));
+        }
+        let p_norm = normalize_query_path(p);
+        if p_norm.len() > 4096 {
+            return Err(AppError::BadRequest("Normalized path too long".into()));
+        }
         if let Ok(Some(row)) = sqlx::query(r#"SELECT depth FROM nodes WHERE scan_id=?1 AND path=?2 LIMIT 1"#)
             .bind(id.to_string())
             .bind(&p_norm)
@@ -409,10 +492,12 @@ pub async fn get_tree(
         }
     }
 
-    let mut sql = String::from(
-        "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count FROM nodes WHERE scan_id=?1"
+    // FIX Bugs #5,#6,#7 - Use QueryBuilder properly instead of string formatting
+    let mut qb = QueryBuilder::new(
+        "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count, mtime, atime FROM nodes WHERE scan_id="
     );
-    let mut idx = 2;
+    qb.push_bind(id.to_string());
+    
     let mut pattern_eq: Option<String> = None;
     let mut pattern_lo: Option<String> = None;
     let mut pattern_hi: Option<String> = None;
@@ -429,47 +514,34 @@ pub async fn get_tree(
                 pfx.push('/');
             }
         }
-        sql.push_str(&format!(" AND (path = ?{} OR (path >= ?{} AND path < ?{}))", idx, idx + 1, idx + 2));
+        let pfx_upper = format!("{}~", pfx);
+        qb.push(" AND (path = ").push_bind(peq.clone());
+        qb.push(" OR (path >= ").push_bind(pfx.clone());
+        qb.push(" AND path < ").push_bind(pfx_upper.clone());
+        qb.push("))");
         pattern_eq = Some(peq);
-        pattern_lo = Some(pfx.clone());
-        pattern_hi = Some(format!("{}{}", pfx, '\u{10ffff}'));
-        idx += 3;
+        pattern_lo = Some(pfx);
+        pattern_hi = Some(pfx_upper);
     }
     if let (Some(bd), Some(d)) = (base_depth, q.depth) {
-        sql.push_str(&format!(" AND depth <= ?{}", idx));
-        idx += 1;
         max_depth = Some(bd + d);
+        qb.push(" AND depth <= ").push_bind(max_depth.unwrap());
     }
 
     match q.sort.as_deref() {
-        Some("name") => sql.push_str(" ORDER BY path ASC"),
-        _ => sql.push_str(" ORDER BY allocated_size DESC"),
-    }
+        Some("name") => qb.push(" ORDER BY path ASC"),
+        _ => qb.push(" ORDER BY allocated_size DESC"),
+    };
     // Clamp limit to a safe range to prevent overly large responses
-    let limit = q.limit.unwrap_or(200).clamp(1, 5000);
-    sql.push_str(&format!(" LIMIT ?{}", idx));
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    qb.push(" LIMIT ").push_bind(limit);
 
-    let mut qx = sqlx::query(&sql).bind(id.to_string());
-    if let Some(eq) = pattern_eq {
-        qx = qx.bind(eq);
-    }
-    if let Some(pat) = pattern_lo {
-        qx = qx.bind(pat);
-    }
-    if let Some(hi) = pattern_hi {
-        qx = qx.bind(hi);
-    }
-    if let Some(md) = max_depth {
-        qx = qx.bind(md);
-    }
-    qx = qx.bind(limit);
-
-    let rows = qx.fetch_all(&state.db).await?;
+    let rows = qb.build().fetch_all(&state.db).await?;
     let mut items: Vec<NodeDto> = Vec::with_capacity(rows.len());
     for r in rows {
         let path: String = r.get("path");
-        let mtime = get_mtime_secs(&path).await;
-        let atime = get_atime_secs(&path).await;
+        let mtime = r.get::<Option<i64>, _>("mtime");
+        let atime = r.get::<Option<i64>, _>("atime");
         items.push(NodeDto {
             path,
             parent_path: r.get("parent_path"),
@@ -501,11 +573,11 @@ pub async fn get_top(
     Query(q): Query<TopQuery>,
 ) -> AppResult<impl IntoResponse> {
     // Clamp limit to a safe range to prevent overly large responses
-    let limit = q.limit.unwrap_or(100).clamp(1, 5000);
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let scope = q.scope.as_deref().unwrap_or("dirs");
     if scope == "files" {
         let rows = sqlx::query(
-            r#"SELECT path, parent_path, logical_size, allocated_size
+            r#"SELECT path, parent_path, logical_size, allocated_size, mtime, atime
                FROM files WHERE scan_id=?1 ORDER BY allocated_size DESC LIMIT ?2"#,
         )
         .bind(id.to_string())
@@ -515,8 +587,8 @@ pub async fn get_top(
         let mut items: Vec<TopItem> = Vec::with_capacity(rows.len());
         for r in rows {
             let p: String = r.get("path");
-            let mtime = get_mtime_secs(&p).await;
-            let atime = get_atime_secs(&p).await;
+            let mtime = r.get::<Option<i64>, _>("mtime");
+            let atime = r.get::<Option<i64>, _>("atime");
             items.push(TopItem::File {
                 path: p,
                 parent_path: r.get("parent_path"),
@@ -531,7 +603,7 @@ pub async fn get_top(
 
     // default: dirs
     let rows = sqlx::query(
-        r#"SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count
+        r#"SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime
            FROM nodes WHERE scan_id=?1 AND is_dir=1 ORDER BY allocated_size DESC LIMIT ?2"#,
     )
     .bind(id.to_string())
@@ -541,8 +613,8 @@ pub async fn get_top(
     let mut items: Vec<TopItem> = Vec::with_capacity(rows.len());
     for r in rows {
         let p: String = r.get("path");
-        let mtime = get_mtime_secs(&p).await;
-        let atime = get_atime_secs(&p).await;
+        let mtime = r.get::<Option<i64>, _>("mtime");
+        let atime = r.get::<Option<i64>, _>("atime");
         items.push(TopItem::Dir {
             path: p,
             parent_path: r.get("parent_path"),
@@ -574,7 +646,7 @@ pub async fn get_list(
     Path(id): Path<Uuid>,
     Query(q): Query<ListQuery>,
 ) -> AppResult<impl IntoResponse> {
-    let limit = q.limit.unwrap_or(500).clamp(1, 5000);
+    let limit = q.limit.unwrap_or(500).clamp(1, 2000);
     let offset = q.offset.unwrap_or(0).max(0);
 
     // If no path specified, return the scan roots as directories
@@ -588,55 +660,44 @@ pub async fn get_list(
             if let Ok(roots) = serde_json::from_str::<Vec<String>>(&r.get::<String, _>("root_paths")) {
                 // fetch nodes for these paths to get sizes/counts
                 for root in roots {
-                    match sqlx::query(
-                        r#"SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count
-                           FROM nodes WHERE scan_id=?1 AND path=?2 LIMIT 1"#)
-                        .bind(id.to_string()).bind(&root).fetch_optional(&state.db).await {
-                        Ok(Some(nr)) => {
-                            let name = std::path::Path::new(&root)
-                                .file_name().and_then(|s| s.to_str()).unwrap_or(&root).to_string();
-                            let path_val: String = nr.get::<String,_>("path");
-                            let mtime = get_mtime_secs(&path_val).await;
-                            let atime = get_atime_secs(&path_val).await;
-                            items.push(ListItem::Dir {
-                                name,
-                                path: path_val,
-                                parent_path: nr.get::<Option<String>,_>("parent_path"),
-                                depth: nr.get::<i64,_>("depth"),
-                                logical_size: nr.get::<i64,_>("logical_size"),
-                                allocated_size: nr.get::<i64,_>("allocated_size"),
-                                file_count: nr.get::<i64,_>("file_count"),
-                                dir_count: nr.get::<i64,_>("dir_count"),
-                                mtime,
-                                atime,
-                            });
-                        }
-                        _ => {
-                            // Fallback: Root-Knoten noch nicht in DB (Scan läuft). Platzhalter zurückgeben
-                            let name = std::path::Path::new(&root)
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| {
-                                    let t = root.trim_end_matches(['\\','/']).to_string();
-                                    if t.is_empty() { root.clone() } else { t }
-                                });
-                            let mtime = get_mtime_secs(&root).await;
-                            let atime = get_atime_secs(&root).await;
-                            items.push(ListItem::Dir {
-                                name,
-                                path: root.clone(),
-                                parent_path: None,
-                                depth: 0,
-                                logical_size: 0,
-                                allocated_size: 0,
-                                file_count: 0,
-                                dir_count: 0,
-                                mtime,
-                                atime,
-                            });
-                        }
-                    }
+                    let root_clone = root.clone();
+                    let root_node = NodeRecord {
+                        path: root.clone(),
+                        parent_path: None,
+                        depth: 0,
+                        is_dir: true,
+                        logical_size: 0,
+                        allocated_size: 0,
+                        file_count: 0,
+                        dir_count: 0,
+                        mtime: get_mtime_secs(&root).await,
+                        atime: get_atime_secs(&root).await,
+                    };
+                    // FIX Bug #65 - Remove duplicate calculation
+                    let (sub_files_total, sub_dirs_total) = get_subtree_totals(&root_clone, &state.db).await?;
+                    let root_files = get_files_in_dir(&root_clone, &state.db).await?;
+                    let total_file_count = root_files.saturating_add(sub_files_total);
+                    let mtime_val = root_node.mtime;
+                    let atime_val = root_node.atime;
+                    // FIX Bug #36 - Better unwrap_or handling
+                    let name = std::path::Path::new(&root)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| root.clone());
+                    
+                    items.push(ListItem::Dir {
+                        name,
+                        path: root,
+                        parent_path: None,
+                        depth: 0,
+                        logical_size: 0,
+                        allocated_size: 0,
+                        file_count: total_file_count,
+                        dir_count: sub_dirs_total,
+                        mtime: mtime_val,
+                        atime: atime_val,
+                    });
                 }
             }
         }
@@ -650,7 +711,7 @@ pub async fn get_list(
     let path = q.path.as_ref().unwrap();
     let pnorm = normalize_query_path(path);
     let dir_rows = sqlx::query(
-        r#"SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count
+        r#"SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime
            FROM nodes WHERE scan_id=?1 AND is_dir=1 AND parent_path=?2"#,
     )
     .bind(id.to_string())
@@ -658,7 +719,7 @@ pub async fn get_list(
     .fetch_all(&state.db)
     .await?;
     let file_rows = sqlx::query(
-        r#"SELECT path, parent_path, logical_size, allocated_size
+        r#"SELECT path, parent_path, logical_size, allocated_size, mtime, atime
            FROM files WHERE scan_id=?1 AND parent_path=?2"#,
     )
     .bind(id.to_string())
@@ -669,9 +730,14 @@ pub async fn get_list(
     let mut items: Vec<ListItem> = Vec::with_capacity(dir_rows.len() + file_rows.len());
     for r in dir_rows {
         let p: String = r.get("path");
-        let name = std::path::Path::new(&p).file_name().and_then(|s| s.to_str()).unwrap_or(&p).to_string();
-        let mtime = get_mtime_secs(&p).await;
-        let atime = get_atime_secs(&p).await;
+        // FIX Bug #34 - Better error handling for file_name
+        let name = std::path::Path::new(&p)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| p.clone());
+        let mtime = r.get::<Option<i64>, _>("mtime");
+        let atime = r.get::<Option<i64>, _>("atime");
         items.push(ListItem::Dir {
             name,
             path: p,
@@ -687,9 +753,14 @@ pub async fn get_list(
     }
     for r in file_rows {
         let p: String = r.get("path");
-        let name = std::path::Path::new(&p).file_name().and_then(|s| s.to_str()).unwrap_or(&p).to_string();
-        let mtime = get_mtime_secs(&p).await;
-        let atime = get_atime_secs(&p).await;
+        // FIX Bug #35 - Better error handling for file_name
+        let name = std::path::Path::new(&p)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| p.clone());
+        let mtime = r.get::<Option<i64>, _>("mtime");
+        let atime = r.get::<Option<i64>, _>("atime");
         items.push(ListItem::File {
             name,
             path: p,
@@ -723,9 +794,15 @@ pub async fn get_recent(
     Query(q): Query<RecentQuery>,
 ) -> AppResult<impl IntoResponse> {
     let scope = q.scope.as_deref().unwrap_or("dirs");
-    let limit = q.limit.unwrap_or(50).clamp(1, 1000);
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
     // Fetch a superset to compute atime and then take top-N
-    let fetch_cap = (limit * 20).clamp(100, 5000);
+    // Use saturating_mul to prevent overflow, but keep reasonable bounds
+    let fetch_multiplier = std::env::var("SPEICHERWALD_RECENT_FETCH_MULTIPLIER")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(10)
+        .clamp(5, 20);
+    let fetch_cap = limit.saturating_mul(fetch_multiplier).clamp(100, 2000) as i64;
 
     // Optional subtree filter: build path range [prefix, prefix + high]
     let mut subtree_eq: Option<String> = None;
@@ -743,37 +820,33 @@ pub async fn get_recent(
         }
         subtree_eq = Some(peq);
         subtree_lo = Some(pfx.clone());
-        subtree_hi = Some(format!("{}{}", pfx, '\u{10ffff}'));
+        // Use a high but valid ASCII character instead of Unicode max
+        subtree_hi = Some(format!("{}~", pfx));
     }
 
     let mut items: Vec<TopItem> = Vec::new();
     let want_dirs = scope == "dirs" || scope == "all";
     let want_files = scope == "files" || scope == "all";
 
+    // FIX Bug #2,#8 - Use QueryBuilder instead of string replacement
     if want_dirs {
-        let mut sql = String::from(
-            "SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count FROM nodes WHERE scan_id=?1 AND is_dir=1",
+        let mut qb = QueryBuilder::new(
+            "SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime FROM nodes WHERE scan_id="
         );
-        if subtree_lo.is_some() {
-            sql.push_str(" AND (path = ?2 OR (path >= ?3 AND path < ?4))");
+        qb.push_bind(id.to_string()).push(" AND is_dir=1");
+        
+        if let (Some(eq), Some(lo), Some(hi)) = (subtree_eq.as_ref(), subtree_lo.as_ref(), subtree_hi.as_ref()) {
+            qb.push(" AND (path = ").push_bind(eq);
+            qb.push(" OR (path >= ").push_bind(lo);
+            qb.push(" AND path < ").push_bind(hi).push("))");
         }
-        sql.push_str(" LIMIT ?X");
-        let sql = sql.replace("?X", &fetch_cap.to_string());
-        let mut qx = sqlx::query(&sql).bind(id.to_string());
-        if let Some(eq) = subtree_eq.as_ref() {
-            qx = qx.bind(eq);
-        }
-        if let Some(lo) = subtree_lo.as_ref() {
-            qx = qx.bind(lo);
-        }
-        if let Some(hi) = subtree_hi.as_ref() {
-            qx = qx.bind(hi);
-        }
-        let rows = qx.fetch_all(&state.db).await?;
+        qb.push(" LIMIT ").push_bind(fetch_cap);
+        
+        let rows = qb.build().fetch_all(&state.db).await?;
         for r in rows {
             let p: String = r.get("path");
-            let mtime = get_mtime_secs(&p).await;
-            let atime = get_atime_secs(&p).await;
+            let mtime = r.get::<Option<i64>, _>("mtime");
+            let atime = r.get::<Option<i64>, _>("atime");
             items.push(TopItem::Dir {
                 path: p,
                 parent_path: r.get("parent_path"),
@@ -787,30 +860,25 @@ pub async fn get_recent(
             });
         }
     }
+    // FIX Bug #3,#9 - Use QueryBuilder instead of string replacement
     if want_files {
-        let mut sql = String::from(
-            "SELECT path, parent_path, logical_size, allocated_size FROM files WHERE scan_id=?1",
+        let mut qb = QueryBuilder::new(
+            "SELECT path, parent_path, logical_size, allocated_size, mtime, atime FROM files WHERE scan_id="
         );
-        if subtree_lo.is_some() {
-            sql.push_str(" AND (path = ?2 OR (path >= ?3 AND path < ?4))");
+        qb.push_bind(id.to_string());
+        
+        if let (Some(eq), Some(lo), Some(hi)) = (subtree_eq.as_ref(), subtree_lo.as_ref(), subtree_hi.as_ref()) {
+            qb.push(" AND (path = ").push_bind(eq);
+            qb.push(" OR (path >= ").push_bind(lo);
+            qb.push(" AND path < ").push_bind(hi).push("))");
         }
-        sql.push_str(" LIMIT ?X");
-        let sql = sql.replace("?X", &fetch_cap.to_string());
-        let mut qx = sqlx::query(&sql).bind(id.to_string());
-        if let Some(eq) = subtree_eq.as_ref() {
-            qx = qx.bind(eq);
-        }
-        if let Some(lo) = subtree_lo.as_ref() {
-            qx = qx.bind(lo);
-        }
-        if let Some(hi) = subtree_hi.as_ref() {
-            qx = qx.bind(hi);
-        }
-        let rows = qx.fetch_all(&state.db).await?;
+        qb.push(" LIMIT ").push_bind(fetch_cap);
+        
+        let rows = qb.build().fetch_all(&state.db).await?;
         for r in rows {
             let p: String = r.get("path");
-            let mtime = get_mtime_secs(&p).await;
-            let atime = get_atime_secs(&p).await;
+            let mtime = r.get::<Option<i64>, _>("mtime");
+            let atime = r.get::<Option<i64>, _>("atime");
             items.push(TopItem::File {
                 path: p,
                 parent_path: r.get("parent_path"),
@@ -833,17 +901,47 @@ pub async fn get_recent(
 }
 
 fn sort_items(items: &mut [ListItem], sort: Option<&str>, order: Option<&str>) {
-    let desc = matches!(order, Some("desc")) || order.is_none();
-    match sort.unwrap_or("allocated") {
-        "name" => items.sort_by_key(|a| get_name(a).to_lowercase()),
-        "logical" => items.sort_by_key(get_logical),
-        "type" => items.sort_by_key(|i| if is_dir(i) { 0 } else { 1 }),
-        "modified" => items.sort_by_key(get_mtime),
-        "accessed" => items.sort_by_key(get_atime),
-        _ => items.sort_by_key(get_alloc),
-    }
-    if desc {
-        items.reverse();
+    // FIX Bug #68 - Default should depend on sort type
+    let sort_key = match sort {
+        Some("name") | Some("logical") | Some("type") | Some("modified") | Some("accessed") | Some("allocated") => sort.unwrap(),
+        _ => "allocated" // default fallback
+    };
+    
+    let desc = match order {
+        Some("asc") => false,
+        Some("desc") => true,
+        None => sort_key != "name", // desc for size/type, asc for name
+        _ => false,
+    };
+    
+    match sort_key {
+        "name" => {
+            items.sort_by_key(|a| get_name(a).to_lowercase());
+            // Name sorting typically ascending by default
+            if matches!(order, Some("desc")) {
+                items.reverse();
+            }
+        },
+        "logical" => {
+            items.sort_by_key(get_logical);
+            if desc { items.reverse(); }
+        },
+        "type" => {
+            items.sort_by_key(|i| if is_dir(i) { 0 } else { 1 });
+            if desc { items.reverse(); }
+        },
+        "modified" => {
+            items.sort_by_key(get_mtime);
+            if desc { items.reverse(); }
+        },
+        "accessed" => {
+            items.sort_by_key(get_atime);
+            if desc { items.reverse(); }
+        },
+        _ => {
+            items.sort_by_key(get_alloc);
+            if desc { items.reverse(); }
+        },
     }
 }
 

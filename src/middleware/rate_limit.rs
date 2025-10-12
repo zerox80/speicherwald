@@ -39,13 +39,24 @@ impl RateLimiter {
         // Get or create entry for this IP
         let timestamps = requests.entry(ip).or_insert_with(Vec::new);
 
-        // Remove old timestamps outside the window
-        timestamps.retain(|&t| now.duration_since(t) < self.window);
+        // Remove old timestamps outside the window (safe against time skew)
+        timestamps.retain(|&t| {
+            // Handle potential time skew by checking duration validity
+            now.checked_duration_since(t)
+                .map(|d| d < self.window)
+                .unwrap_or(false)
+        });
 
         // Check if rate limit exceeded
         if timestamps.len() >= self.max_requests {
+            // Calculate retry_after based on oldest timestamp
             let oldest = timestamps.first().copied().unwrap_or(now);
-            let retry_after = self.window.saturating_sub(now.duration_since(oldest));
+            let retry_after = if let Some(elapsed) = now.checked_duration_since(oldest) {
+                self.window.saturating_sub(elapsed)
+            } else {
+                // Time went backwards, reset window
+                Duration::from_secs(1)
+            };
 
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
@@ -69,17 +80,15 @@ impl RateLimiter {
         let now = Instant::now();
         let mut requests = self.requests.write().await;
 
-        // Remove IPs with no recent requests
+        // Remove IPs with no recent requests (handle time skew)
         requests.retain(|_, timestamps| {
-            timestamps.retain(|&t| now.duration_since(t) < self.window);
+            timestamps.retain(|&t| {
+                now.checked_duration_since(t)
+                    .map(|d| d < self.window)
+                    .unwrap_or(false)
+            });
             !timestamps.is_empty()
         });
-    }
-}
-
-impl Default for EndpointRateLimiter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -109,8 +118,14 @@ pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
     // in-memory IP map for the global limiter in long-running processes.
     GLOBAL_CLEANUP_STARTED.get_or_init(|| {
         let limiter = GLOBAL_RATE_LIMITER.clone();
+        // Configurable cleanup interval
+        let cleanup_secs = std::env::var("SPEICHERWALD_RATE_LIMIT_CLEANUP_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300)
+            .clamp(60, 3600);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            let mut interval = tokio::time::interval(Duration::from_secs(cleanup_secs));
             loop {
                 interval.tick().await;
                 limiter.cleanup_old_entries().await;
@@ -130,6 +145,12 @@ pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
 #[derive(Clone)]
 pub struct EndpointRateLimiter {
     limiters: Arc<RwLock<HashMap<String, RateLimiter>>>,
+}
+
+impl Default for EndpointRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EndpointRateLimiter {

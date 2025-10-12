@@ -30,6 +30,11 @@ pub async fn list_drives(State(state): State<AppState>, headers: HeaderMap) -> R
 
     unsafe {
         let mask = GetLogicalDrives();
+        // Check if GetLogicalDrives failed (returns 0 on error)
+        if mask == 0 {
+            tracing::error!("GetLogicalDrives failed");
+            return Json(DrivesResponse { items }).into_response();
+        }
         for i in 0..26u32 {
             if (mask & (1u32 << i)) == 0 {
                 continue;
@@ -39,6 +44,10 @@ pub async fn list_drives(State(state): State<AppState>, headers: HeaderMap) -> R
             let w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
 
             let dtype = GetDriveTypeW(PCWSTR(w.as_ptr()));
+            // Skip invalid/unknown drive types (0 = unknown/error, 1 = invalid)
+            if dtype == 0 || dtype == 1 {
+                continue;
+            }
             let drive_type = match dtype {
                 0 => "unknown",
                 1 => "invalid",
@@ -55,6 +64,12 @@ pub async fn list_drives(State(state): State<AppState>, headers: HeaderMap) -> R
             let (_free, total, total_free) = if dtype == 4 {
                 // network drive
                 // Run the blocking call in a short-lived thread with timeout to avoid UI hangs
+                // Configurable timeout for network drives (default 1000ms for slower connections)
+                let timeout_ms = std::env::var("SPEICHERWALD_NETWORK_DRIVE_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(1000)
+                    .clamp(100, 5000);
                 let (tx, rx) = mpsc::channel();
                 let w2 = w.clone();
                 thread::spawn(move || {
@@ -69,7 +84,7 @@ pub async fn list_drives(State(state): State<AppState>, headers: HeaderMap) -> R
                     );
                     let _ = tx.send((free, total, total_free));
                 });
-                rx.recv_timeout(Duration::from_millis(400)).unwrap_or_default()
+                rx.recv_timeout(Duration::from_millis(timeout_ms)).unwrap_or_default()
             } else {
                 let mut free: u64 = 0;
                 let mut total: u64 = 0;

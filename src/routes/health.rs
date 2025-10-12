@@ -6,15 +6,19 @@ use axum::{
     Json,
 };
 
+// Health check endpoint - lightweight, no rate limiting
 pub async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
-// Readiness probe: checks DB connectivity
+// Readiness probe: checks DB connectivity with timeout protection
 pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
-    match sqlx::query("SELECT 1").fetch_one(&state.db).await {
-        Ok(_) => (StatusCode::OK, "ready").into_response(),
-        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("not ready: {}", e)).into_response(),
+    // Add timeout to prevent hanging readiness checks
+    let query = sqlx::query("SELECT 1").fetch_one(&state.db);
+    match tokio::time::timeout(std::time::Duration::from_secs(5), query).await {
+        Ok(Ok(_)) => (StatusCode::OK, "ready").into_response(),
+        Ok(Err(e)) => (StatusCode::SERVICE_UNAVAILABLE, format!("not ready: {}", e)).into_response(),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "not ready: timeout").into_response(),
     }
 }
 

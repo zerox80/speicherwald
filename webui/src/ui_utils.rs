@@ -21,30 +21,75 @@ pub fn fmt_bytes(n: i64) -> String {
 }
 
 // Format a short relative time label: e.g. 3M (months), 2Y (years), 12D (days).
-// If less than 1 day, show "<1D". If None, show "—".
+// Accepts timestamps in various epoch units (seconds, ms, µs, ns). For sub-day differences show hours/minutes. If None, show "—".
 pub fn fmt_ago_short(ts: Option<i64>) -> String {
     match ts {
         Some(secs) => {
-            let now_ms = Date::now();
-            let mut then_ms = secs as f64;
-            let abs_val = then_ms.abs();
-            if abs_val >= 1_000_000_000_000_000_000.0 {
-                then_ms /= 1_000_000.0;
-            } else if abs_val >= 1_000_000_000_000_000.0 {
-                then_ms /= 1_000.0;
-            } else if abs_val < 1_000_000_000_000.0 {
-                then_ms *= 1000.0;
+            // FIX Bug #25 - Better overflow validation
+            if secs <= 0 || secs > 253402300799 { // Max valid Unix timestamp (year 9999)
+                return "—".to_string();
             }
-            let diff_ms = if now_ms > then_ms { now_ms - then_ms } else { 0.0 };
-            let diff_days = (diff_ms / (1000.0 * 60.0 * 60.0 * 24.0)).floor() as i64;
-            if diff_days < 1 {
-                return "<1D".to_string();
+            
+            let now_sec = Date::now() / 1000.0;
+            let base = secs as f64;
+            let mut best = base;
+            let mut best_diff = (now_sec - base).abs();
+            
+            // FIX Bug #26 - Safely calculate candidates with overflow protection
+            let candidates = [
+                base,
+                base / 1_000.0,
+                base / 1_000_000.0,
+                base / 1_000_000_000.0,
+            ];
+            // Add multiplication candidates only if they won't overflow
+            // Also check that result is reasonable (not too far in past/future)
+            let max_reasonable_ts = now_sec * 3.0; // Allow up to 3x current time
+            let mult_candidates: Vec<f64> = vec![
+                if base > 0.0 && base < (f64::MAX / 1_000.0) && (base * 1_000.0) < max_reasonable_ts { Some(base * 1_000.0) } else { None },
+                if base > 0.0 && base < (f64::MAX / 1_000_000.0) && (base * 1_000_000.0) < max_reasonable_ts { Some(base * 1_000_000.0) } else { None },
+            ].into_iter().flatten().collect();
+            
+            for cand in candidates.iter().chain(mult_candidates.iter()) {
+                if !cand.is_finite() || *cand <= 0.0 || *cand > f64::MAX / 2.0 {
+                    continue;
+                }
+                let diff = (now_sec - cand).abs();
+                // Only consider candidates that make sense (within 100 years)
+                if diff < best_diff && diff < (100.0 * 365.25 * 86400.0) {
+                    best_diff = diff;
+                    best = *cand;
+                }
             }
-            let years = diff_days / 365;
-            if years >= 1 { return format!("{}Y", years); }
-            let months = diff_days / 30;
-            if months >= 1 { return format!("{}M", months); }
-            format!("{}D", diff_days)
+            
+            let diff_sec = (now_sec - best).max(0.0);
+            if diff_sec < 60.0 {
+                return "<1m".to_string();
+            }
+            if diff_sec < 3600.0 {
+                let minutes = (diff_sec / 60.0).floor() as i64;
+                return format!("{}m", minutes.max(1));
+            }
+            if diff_sec < 86_400.0 {
+                let hours = (diff_sec / 3600.0).floor() as i64;
+                return format!("{}H", hours.max(1));
+            }
+            let diff_days = (diff_sec / 86_400.0).floor() as i64;
+            // Use more accurate year calculation (365.25 days per year on average)
+            if diff_days >= 365 {
+                let years = (diff_days as f64 / 365.25).floor() as i64;
+                return format!("{}Y", years.max(1));
+            }
+            // Use more accurate month calculation (30.44 days per month on average)
+            if diff_days >= 30 {
+                let months = (diff_days as f64 / 30.44).floor() as i64;
+                return format!("{}M", months.max(1));
+            }
+            if diff_days > 0 {
+                format!("{}D", diff_days)
+            } else {
+                "<1D".to_string()
+            }
         }
         None => "—".to_string(),
     }
@@ -59,8 +104,10 @@ pub fn copy_to_clipboard(text: String) {
         let clip = nav.clipboard();
         let promise = clip.write_text(&text);
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = JsFuture::from(promise).await;
-            show_toast("In Zwischenablage kopiert");
+            match JsFuture::from(promise).await {
+                Ok(_) => show_toast("In Zwischenablage kopiert"),
+                Err(_) => show_toast("Fehler beim Kopieren"),
+            }
         });
     }
 }
@@ -73,7 +120,9 @@ pub fn show_toast(message: &str) {
                 if let Ok(toast) = doc.create_element("div") {
                     toast.set_class_name("toast fade-in");
                     toast.set_text_content(Some(message));
-                    let _ = container.append_child(&toast);
+                    if container.append_child(&toast).is_err() {
+                        return; // Failed to append, exit early
+                    }
 
                     // Auto-remove after timeout
                     let container_clone = container.clone();
@@ -97,10 +146,27 @@ pub fn show_toast(message: &str) {
 pub fn fmt_time_opt(ts: Option<i64>) -> String {
     match ts {
         Some(secs) => {
+            // FIX Bug #24 - Better overflow protection
+            // Max valid Unix timestamp (year 9999)
+            if secs <= 0 || secs > 253402300799 {
+                return "—".to_string();
+            }
+            // Safe to multiply now (validated range)
             let ms = (secs as f64) * 1000.0;
+            // Additional safety check on result
+            if !ms.is_finite() || ms < 0.0 {
+                return "—".to_string();
+            }
             let d = Date::new(&JsValue::from_f64(ms));
+            // FIX Bug #37 - Better error handling for date conversion
             let iso = d.to_iso_string();
-            let s = iso.as_string().unwrap_or_else(|| d.to_string().as_string().unwrap_or_default());
+            let s = match iso.as_string() {
+                Some(s) => s,
+                None => {
+                    let fallback = d.to_string();
+                    fallback.as_string().unwrap_or_else(|| "Invalid Date".to_string())
+                }
+            };
             if let Some((date, time)) = s.split_once('T') {
                 let mut hhmm = String::new();
                 for (i, ch) in time.chars().enumerate() {

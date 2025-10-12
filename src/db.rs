@@ -1,16 +1,21 @@
 use sqlx::SqlitePool;
 
 pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
+    // FIX Bug #57 - Log PRAGMA failures
     // Pragmas for better durability/performance
-    sqlx::query("PRAGMA journal_mode=WAL;").execute(pool).await.ok();
-    sqlx::query("PRAGMA synchronous=NORMAL;").execute(pool).await.ok();
-    sqlx::query("PRAGMA foreign_keys=ON;").execute(pool).await.ok();
+    if let Err(e) = sqlx::query("PRAGMA journal_mode=WAL;").execute(pool).await {
+        tracing::warn!("Failed to set WAL journal mode: {}", e);
+    }
+    if let Err(e) = sqlx::query("PRAGMA synchronous=NORMAL;").execute(pool).await {
+        tracing::warn!("Failed to set synchronous mode: {}", e);
+    }
+    // Foreign keys are critical - fail if this doesn't work
+    sqlx::query("PRAGMA foreign_keys=ON;").execute(pool).await?;
+    
     // Additional tuning (best-effort)
     sqlx::query("PRAGMA busy_timeout=10000;").execute(pool).await.ok();
-    // negative cache_size means KB; here ~64MB
     sqlx::query("PRAGMA cache_size=-65536;").execute(pool).await.ok();
     sqlx::query("PRAGMA temp_store=MEMORY;").execute(pool).await.ok();
-    // Enable mmap to reduce syscall overhead (256MB)
     sqlx::query("PRAGMA mmap_size=268435456;").execute(pool).await.ok();
 
     // scans table
@@ -85,59 +90,47 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    sqlx::query("ALTER TABLE nodes ADD COLUMN mtime INTEGER NULL")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("ALTER TABLE nodes ADD COLUMN atime INTEGER NULL")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("ALTER TABLE files ADD COLUMN mtime INTEGER NULL")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("ALTER TABLE files ADD COLUMN atime INTEGER NULL")
-        .execute(pool)
-        .await
-        .ok();
+    // FIX Bug #56 - Better error detection for migrations
+    // Add timestamp columns if they don't exist (migrations)
+    for (table, column) in [("nodes", "mtime"), ("nodes", "atime"), ("files", "mtime"), ("files", "atime")] {
+        let query = format!("ALTER TABLE {} ADD COLUMN {} INTEGER NULL", table, column);
+        if let Err(e) = sqlx::query(&query).execute(pool).await {
+            // Check if it's a benign "column already exists" error
+            match &e {
+                sqlx::Error::Database(db_err) => {
+                    let msg = db_err.message().to_lowercase();
+                    if !msg.contains("duplicate") && !msg.contains("already exists") {
+                        tracing::error!("Failed to add {} column to {}: {}", column, table, e);
+                        return Err(anyhow::anyhow!("Migration failed: {}", e));
+                    }
+                }
+                _ => {
+                    tracing::error!("Unexpected error adding {} to {}: {}", column, table, e);
+                    return Err(anyhow::anyhow!("Migration failed: {}", e));
+                }
+            }
+        }
+    }
 
-    // helpful indexes
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at DESC);")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_warnings_scan ON warnings(scan_id);")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_nodes_scan_path ON nodes(scan_id, path);")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_nodes_scan_isdir ON nodes(scan_id, is_dir);")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_nodes_scan_parent ON nodes(scan_id, parent_path);")
-        .execute(pool)
-        .await
-        .ok();
-    // Improve ORDER BY allocated_size DESC for dirs
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_nodes_scan_isdir_alloc_desc ON nodes(scan_id, is_dir, allocated_size DESC);")
-        .execute(pool).await.ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_files_scan_parent ON files(scan_id, parent_path);")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_files_scan_size ON files(scan_id, allocated_size DESC);")
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_files_scan_path ON files(scan_id, path);")
-        .execute(pool)
-        .await
-        .ok();
+    // FIX Bug #62 - Log index creation failures
+    let indexes = [
+        ("idx_scans_status_started", "CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at DESC)"),
+        ("idx_warnings_scan", "CREATE INDEX IF NOT EXISTS idx_warnings_scan ON warnings(scan_id)"),
+        ("idx_nodes_scan_path", "CREATE INDEX IF NOT EXISTS idx_nodes_scan_path ON nodes(scan_id, path)"),
+        ("idx_nodes_scan_isdir", "CREATE INDEX IF NOT EXISTS idx_nodes_scan_isdir ON nodes(scan_id, is_dir)"),
+        ("idx_nodes_scan_parent", "CREATE INDEX IF NOT EXISTS idx_nodes_scan_parent ON nodes(scan_id, parent_path)"),
+        ("idx_nodes_scan_isdir_alloc_desc", "CREATE INDEX IF NOT EXISTS idx_nodes_scan_isdir_alloc_desc ON nodes(scan_id, is_dir, allocated_size DESC)"),
+        ("idx_files_scan_parent", "CREATE INDEX IF NOT EXISTS idx_files_scan_parent ON files(scan_id, parent_path)"),
+        ("idx_files_scan_size", "CREATE INDEX IF NOT EXISTS idx_files_scan_size ON files(scan_id, allocated_size DESC)"),
+        ("idx_files_scan_path", "CREATE INDEX IF NOT EXISTS idx_files_scan_path ON files(scan_id, path)"),
+    ];
+    
+    for (name, query) in indexes {
+        if let Err(e) = sqlx::query(query).execute(pool).await {
+            tracing::warn!("Failed to create index {}: {}", name, e);
+            // Continue with other indexes even if one fails
+        }
+    }
 
     Ok(())
 }

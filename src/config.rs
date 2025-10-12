@@ -54,13 +54,22 @@ impl Default for AppConfig {
     fn default() -> Self {
         // Fallback: parse the embedded default TOML
         let defaults: &str = include_str!("../config/default.toml");
-        let cfg: AppConfig = ::config::Config::builder()
+        match ::config::Config::builder()
             .add_source(::config::File::from_str(defaults, ::config::FileFormat::Toml))
             .build()
-            .expect("default config parse")
-            .try_deserialize()
-            .expect("default config deserialize");
-        cfg
+        {
+            Ok(cfg) => match cfg.try_deserialize() {
+                Ok(app_cfg) => app_cfg,
+                Err(e) => {
+                    eprintln!("FATAL: Failed to deserialize default config: {}", e);
+                    panic!("Failed to deserialize default config: {}", e);
+                }
+            },
+            Err(e) => {
+                eprintln!("FATAL: Failed to parse default config: {}", e);
+                panic!("Failed to parse default config: {}", e);
+            }
+        }
     }
 }
 
@@ -104,6 +113,11 @@ fn validate(cfg: &AppConfig) -> anyhow::Result<()> {
     if cfg.server.port == 0 {
         return Err(anyhow::anyhow!("invalid server.port: {}", cfg.server.port));
     }
+    // Warn for privileged ports on Unix-like systems
+    #[cfg(unix)]
+    if cfg.server.port < 1024 {
+        tracing::warn!("Using privileged port {} - may require elevated permissions", cfg.server.port);
+    }
 
     // Scanner
     if cfg.scanner.batch_size == 0 {
@@ -112,15 +126,15 @@ fn validate(cfg: &AppConfig) -> anyhow::Result<()> {
     if cfg.scanner.flush_threshold == 0 {
         return Err(anyhow::anyhow!("scanner.flush_threshold must be > 0"));
     }
-    if cfg.scanner.flush_threshold < cfg.scanner.batch_size {
-        return Err(anyhow::anyhow!("scanner.flush_threshold must be >= batch_size"));
+    if cfg.scanner.flush_threshold <= cfg.scanner.batch_size {
+        return Err(anyhow::anyhow!("scanner.flush_threshold must be > batch_size"));
     }
     if cfg.scanner.flush_interval_ms == 0 {
         return Err(anyhow::anyhow!("scanner.flush_interval_ms must be > 0"));
     }
     if let Some(dc) = cfg.scanner.dir_concurrency {
-        if dc == 0 || dc > 1000 {
-            return Err(anyhow::anyhow!("scanner.dir_concurrency must be in 1..=1000"));
+        if dc == 0 || dc > 256 {
+            return Err(anyhow::anyhow!("scanner.dir_concurrency must be in 1..=256"));
         }
     }
     if let Some(h) = cfg.scanner.handle_limit {
@@ -131,8 +145,8 @@ fn validate(cfg: &AppConfig) -> anyhow::Result<()> {
 
     // Scan defaults
     if let Some(c) = cfg.scan_defaults.concurrency {
-        if c == 0 || c > 1000 {
-            return Err(anyhow::anyhow!("scan_defaults.concurrency must be in 1..=1000"));
+        if c == 0 || c > 256 {
+            return Err(anyhow::anyhow!("scan_defaults.concurrency must be in 1..=256"));
         }
     }
 
@@ -142,11 +156,24 @@ fn validate(cfg: &AppConfig) -> anyhow::Result<()> {
 pub fn ensure_sqlite_parent_dir(url: &str) -> anyhow::Result<()> {
     if let Some(path) = url.strip_prefix("sqlite://") {
         // On Windows, handle URLs like sqlite:///C:/... by stripping the leading '/'
+        // FIX Bug #49 - Only allow valid ASCII drive letters (A-Z, a-z)
         #[cfg(windows)]
         let path = {
             let bytes = path.as_bytes();
-            if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
-                &path[1..]
+            // Check for drive letter: /C:/ or /c:/
+            if bytes.len() >= 3 && bytes[0] == b'/' && bytes[2] == b':' {
+                let drive_byte = bytes[1];
+                // Only allow valid ASCII drive letters (A-Z, a-z)
+                // Extended ASCII (>= 128) is NOT valid for Windows drive letters
+                if (drive_byte >= b'A' && drive_byte <= b'Z') 
+                    || (drive_byte >= b'a' && drive_byte <= b'z')
+                {
+                    &path[1..]
+                } else {
+                    // Invalid drive letter, keep the path as-is and let it fail naturally
+                    tracing::warn!("Invalid drive letter in path: {:?}", path);
+                    path
+                }
             } else {
                 path
             }

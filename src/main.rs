@@ -61,8 +61,19 @@ async fn main() -> anyhow::Result<()> {
         info!("Creating SQLite database at {}", db_url);
         Sqlite::create_database(db_url).await?;
     }
+    // Configurable max connections via environment variable with error logging
+    let max_conns = std::env::var("SPEICHERWALD_DB_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| {
+            v.parse::<u32>().map_err(|e| {
+                tracing::warn!("Invalid SPEICHERWALD_DB_MAX_CONNECTIONS value '{}': {}", v, e);
+                e
+            }).ok()
+        })
+        .unwrap_or(16)
+        .clamp(1, 64);
     let pool = SqlitePoolOptions::new()
-        .max_connections(16)
+        .max_connections(max_conns)
         .after_connect(|conn, _meta| {
             Box::pin(async move {
                 let _ = sqlx::query("PRAGMA foreign_keys=ON;").execute(&mut *conn).await;
@@ -85,8 +96,14 @@ async fn main() -> anyhow::Result<()> {
     // Spawn periodic cleanup for per-endpoint rate limiters to avoid memory growth
     {
         let rl = state.rate_limiter.clone();
+        // Configurable cleanup interval
+        let cleanup_secs = std::env::var("SPEICHERWALD_RATE_LIMIT_CLEANUP_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300)
+            .clamp(60, 3600);
         tokio::spawn(async move {
-            let mut ticker = time::interval(TokioDuration::from_secs(300));
+            let mut ticker = time::interval(TokioDuration::from_secs(cleanup_secs));
             loop {
                 ticker.tick().await;
                 rl.cleanup_all().await;
@@ -120,7 +137,8 @@ async fn main() -> anyhow::Result<()> {
         fn should_compress<B: axum::body::HttpBody>(&self, res: &axum::http::Response<B>) -> bool {
             if let Some(ct) = res.headers().get(CONTENT_TYPE) {
                 if let Ok(s) = ct.to_str() {
-                    if s.starts_with("text/event-stream") {
+                    // Also exclude chunked responses for better compatibility
+                    if s.starts_with("text/event-stream") || s.starts_with("multipart/") {
                         return false;
                     }
                 }
@@ -152,8 +170,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/drives", get(routes::drives::list_drives))
         .fallback_service(static_ui_service)
         .with_state(state)
-        // Globales Body-Limit (10 MB) – schützt vor übergroßen Requests
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        // Globales Body-Limit – schützt vor übergroßen Requests (configurable via env)
+        .layer(DefaultBodyLimit::max(
+            std::env::var("SPEICHERWALD_MAX_BODY_SIZE")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(10 * 1024 * 1024)
+                .clamp(1024 * 1024, 50 * 1024 * 1024) // 1MB to 50MB
+        ))
         .layer(from_fn(middleware::validation::validate_request_middleware))
         .layer(from_fn(middleware::rate_limit::rate_limit_middleware))
         .layer(compression)
@@ -192,4 +216,6 @@ async fn shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
     }
     info!("Shutdown signal received. Stopping server...");
+    // Small delay to allow log buffers to flush
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 }

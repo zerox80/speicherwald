@@ -96,6 +96,10 @@ pub struct DriveInfo {
 
 impl Default for ScanOptions {
     fn default() -> Self {
+        // Calculate concurrency: use half the CPU cores, minimum 2, maximum 16
+        let cpu_count = num_cpus::get();
+        let default_concurrency = (cpu_count / 2).max(2).min(16);
+        
         Self {
             follow_symlinks: false,
             include_hidden: true,
@@ -103,7 +107,7 @@ impl Default for ScanOptions {
             measure_allocated: true,
             excludes: vec![],
             max_depth: None,
-            concurrency: Some(num_cpus::get().max(2usize) / 2usize + 1usize),
+            concurrency: Some(default_concurrency),
         }
     }
 }

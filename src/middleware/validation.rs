@@ -37,18 +37,24 @@ pub async fn validate_request_middleware(req: Request, next: Next) -> Response {
     }
 
     // Check content length for POST/PUT requests
+    // This is redundant with DefaultBodyLimit but provides early rejection
     if matches!(req.method(), &axum::http::Method::POST | &axum::http::Method::PUT) {
         if let Some(content_length) = req.headers().get("content-length") {
             if let Ok(length_str) = content_length.to_str() {
                 if let Ok(length) = length_str.parse::<usize>() {
-                    const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10MB
-                    if length > MAX_BODY_SIZE {
+                    // Use configurable limit matching main.rs
+                    let max_body_size = std::env::var("SPEICHERWALD_MAX_BODY_SIZE")
+                        .ok()
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(10 * 1024 * 1024)
+                        .clamp(1024 * 1024, 50 * 1024 * 1024);
+                    if length > max_body_size {
                         return (
                             StatusCode::PAYLOAD_TOO_LARGE,
                             Json(json!({
                                 "error": {
                                     "code": "PAYLOAD_TOO_LARGE",
-                                    "message": format!("Request body exceeds maximum size of {} bytes", MAX_BODY_SIZE),
+                                    "message": format!("Request body exceeds maximum size of {} bytes", max_body_size),
                                 },
                                 "status": 413,
                             })),
@@ -62,22 +68,53 @@ pub async fn validate_request_middleware(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-/// Check if a path contains traversal attempts
+/// Check if a path contains traversal attempts (FIX Bugs #46, #47, #48)
+/// More comprehensive check for actual directory traversal patterns
 fn contains_path_traversal(path: &str) -> bool {
-    path.contains("..")
-        || path.contains("./")
-        || path.contains("/.")
-        || path.contains("%2e%2e")
-        || path.contains("%2e/")
-        || path.contains("/%2e")
-        || path.contains('\0')
+    // Check for actual path traversal sequences
+    let lower = path.to_lowercase();
+    
+    // Direct traversal patterns
+    if path.contains("/..") || path.contains("\\..") || path.starts_with("..") {
+        return true;
+    }
+    
+    // Current directory references that could be dangerous
+    if path.contains("/./") || path.contains("\\.\\") {
+        return true;
+    }
+    
+    // Multiple dots (bypass attempt: ....)
+    if path.contains("....") {
+        return true;
+    }
+    
+    // URL-encoded variants (single and double encoding)
+    let encoded_patterns = [
+        "%2e%2e", "%252e%252e", // .. and double-encoded ..
+        "%2e/", "%252e%2f",     // ./
+        "/%2e", "%2f%2e",        // /.
+        "%2e\\", "%2e%5c",       // .\\ 
+        "%5c%2e", "%5c%5c",      // \\.
+        "%00",                   // Null byte
+    ];
+    
+    for pattern in &encoded_patterns {
+        if lower.contains(pattern) {
+            return true;
+        }
+    }
+    
+    // Null bytes
+    path.contains('\0')
 }
 
 /// Check for suspicious user agents (simple heuristic)
 fn is_suspicious_user_agent(ua: &str) -> bool {
     let ua_lower = ua.to_lowercase();
+    // Only flag if it contains scanner OR if it contains crawler but NOT legitimate bots
     ua_lower.contains("scanner")
-        || ua_lower.contains("crawler") && !ua_lower.contains("googlebot") && !ua_lower.contains("bingbot")
+        || (ua_lower.contains("crawler") && !ua_lower.contains("googlebot") && !ua_lower.contains("bingbot"))
         || ua_lower.contains("nikto")
         || ua_lower.contains("sqlmap")
         || ua_lower.contains("havij")
@@ -165,12 +202,30 @@ pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_
             }
         }
 
-        // Allow colon only in drive letter position (e.g., C:\ or C:/)
+        // Allow colon only in drive letter position (e.g., C:\ or C:/) or UNC paths
         if path.contains(':') {
             let colon_count = path.matches(':').count();
-            let is_drive_path =
-                (path.len() >= 2 && path.chars().nth(1) == Some(':')) || path.starts_with("\\\\?\\");
-            if colon_count > 1 || (colon_count == 1 && !is_drive_path) {
+            // Valid cases: drive letter (C:), extended path (\\?\), UNC path (\\server\share)
+            let is_drive_path = path.len() >= 2 && path.chars().nth(1) == Some(':');
+            let is_extended_path = path.starts_with("\\\\?\\");
+            let is_unc_path = path.starts_with("\\\\");
+            
+            // More than one colon is never valid
+            if colon_count > 1 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "code": "INVALID_PATH_CHARS",
+                            "message": "Multiple colons in path",
+                        },
+                        "status": 400,
+                    })),
+                ));
+            }
+            
+            // Single colon must be in valid position
+            if colon_count == 1 && !is_drive_path && !is_extended_path && !is_unc_path {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(json!({
@@ -210,10 +265,10 @@ pub fn validate_scan_options(
         }
     }
 
-    // Validate concurrency
+    // Validate concurrency (align with config.rs max of 256)
     if let Some(conc) = concurrency {
-        const MAX_ALLOWED_CONCURRENCY: usize = 50;
-        if conc > MAX_ALLOWED_CONCURRENCY {
+        const MAX_ALLOWED_CONCURRENCY: usize = 256;
+        if conc == 0 || conc > MAX_ALLOWED_CONCURRENCY {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({
@@ -225,27 +280,22 @@ pub fn validate_scan_options(
                 })),
             ));
         }
-        if conc == 0 {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": {
-                        "code": "INVALID_CONCURRENCY",
-                        "message": "Concurrency must be at least 1",
-                    },
-                    "status": 400,
-                })),
-            ));
-        }
+        // Combined check above, this is now redundant
     }
 
     Ok(())
 }
 
-/// Sanitize user input for logging
+/// Sanitize user input for logging (removes control chars, limits length, escapes special chars)
 pub fn sanitize_for_logging(input: &str) -> String {
-    // Remove control characters and limit length
-    input.chars().filter(|c| !c.is_control() || c.is_whitespace()).take(200).collect()
+    // Remove control characters (except whitespace), escape quotes, and limit length
+    input.chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .take(200)
+        .collect::<String>()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\'', "\\\'")
 }
 
 #[cfg(test)]
@@ -304,9 +354,11 @@ mod tests {
         assert!(validate_scan_options(Some(10), Some(5)).is_ok());
         assert!(validate_scan_options(None, None).is_ok());
 
-        assert!(validate_scan_options(Some(101), Some(5)).is_err());
-        assert!(validate_scan_options(Some(10), Some(51)).is_err());
-        assert!(validate_scan_options(Some(10), Some(0)).is_err());
+        // FIX Bug #69 - Use correct MAX_ALLOWED_CONCURRENCY (256, not 50)
+        assert!(validate_scan_options(Some(101), Some(5)).is_err()); // max_depth too high
+        assert!(validate_scan_options(Some(10), Some(257)).is_err()); // concurrency > 256
+        assert!(validate_scan_options(Some(10), Some(0)).is_err()); // concurrency == 0
+        assert!(validate_scan_options(Some(10), Some(256)).is_ok()); // concurrency == 256 is OK
     }
 
     #[test]

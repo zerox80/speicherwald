@@ -77,12 +77,28 @@ pub async fn search_scan(
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/scans/:id/search", ip).await {
         return Ok((status, body).into_response());
     }
-    // Validate query
+    // Validate query (FIX Bug #52 - Sanitize LIKE patterns)
     if query.query.trim().is_empty() {
         return Err(AppError::InvalidInput("Search query cannot be empty".to_string()));
     }
+    
+    // Sanitize search query to prevent LIKE injection
+    let sanitized_query = query.query.trim()
+        .replace('\\', "")
+        .replace('%', "")
+        .replace('_', "")
+        .replace('[', "")
+        .replace(']', "");
+    
+    if sanitized_query.is_empty() {
+        return Err(AppError::InvalidInput("Search query contains only special characters".to_string()));
+    }
+    
+    if sanitized_query.len() > 500 {
+        return Err(AppError::InvalidInput("Search query too long".to_string()));
+    }
 
-    let search_pattern = format!("%{}%", query.query.trim());
+    let search_pattern = format!("%{}%", sanitized_query);
     let include_files = query.include_files.unwrap_or(true);
     let include_dirs = query.include_dirs.unwrap_or(true);
 
@@ -91,9 +107,16 @@ pub async fn search_scan(
     }
 
     // We'll execute a single UNION query with global ORDER+LIMIT+OFFSET.
-    // Clamp to keep resource usage bounded even with large offsets.
-    let limit_clamped = query.limit.clamp(1, 5_000);
-    let offset_clamped = query.offset.max(0);
+    // Clamp to keep resource usage bounded even with large offsets. (FIX Bug #19)
+    let limit_clamped = query.limit.clamp(1, 1000);
+    let offset_clamped = query.offset.max(0).min(10_000); // Prevent excessive offset and performance issues
+    
+    // Validate that offset + limit doesn't overflow
+    if let Some(_overflow) = offset_clamped.checked_add(limit_clamped) {
+        // OK
+    } else {
+        return Err(AppError::InvalidInput("Offset and limit combination would overflow".to_string()));
+    }
 
     // Build COUNT queries (parameterized)
     let total_dirs = if include_dirs {
@@ -121,8 +144,16 @@ pub async fn search_scan(
             qb.push(" AND allocated_size <= ").push_bind(max_size);
         }
         if let Some(file_type) = &query.file_type {
-            let ext_pattern = format!("%.{}", file_type.to_lowercase());
-            qb.push(" AND LOWER(path) LIKE ").push_bind(ext_pattern);
+            // Sanitize file_type to prevent injection (for COUNT query) (FIX Bug #53)
+            let sanitized = file_type.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .take(20)
+                .collect::<String>();
+            if !sanitized.is_empty() {
+                // Use parameterized pattern to prevent any LIKE injection
+                let ext_pattern = format!(".{}", sanitized.to_lowercase());
+                qb.push(" AND LOWER(path) LIKE '%' || ").push_bind(ext_pattern).push(" COLLATE NOCASE");
+            }
         }
         let row = qb.build().fetch_one(&state.db).await?;
         row.try_get::<i64, _>("cnt")?
@@ -165,8 +196,16 @@ pub async fn search_scan(
             qb.push(" AND allocated_size <= ").push_bind(max_size);
         }
         if let Some(file_type) = &query.file_type {
-            let ext_pattern = format!("%.{}", file_type.to_lowercase());
-            qb.push(" AND LOWER(path) LIKE ").push_bind(ext_pattern);
+            // Sanitize file_type to prevent injection (for UNION query) (FIX Bug #53)
+            let sanitized = file_type.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .take(20)
+                .collect::<String>();
+            if !sanitized.is_empty() {
+                // Use parameterized pattern to prevent any LIKE injection
+                let ext_pattern = format!(".{}", sanitized.to_lowercase());
+                qb.push(" AND LOWER(path) LIKE '%' || ").push_bind(ext_pattern).push(" COLLATE NOCASE");
+            }
         }
     }
     qb.push(") ORDER BY allocated_size DESC LIMIT ")
@@ -179,7 +218,12 @@ pub async fn search_scan(
     for row in rows {
         let kind: String = row.try_get("kind")?;
         let path: String = row.try_get("path")?;
-        let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string();
+        // FIX Bug #32 - Better path name extraction
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&path)
+            .to_string();
         if kind == "dir" {
             items.push(SearchItem::Dir {
                 path,
@@ -191,12 +235,29 @@ pub async fn search_scan(
                 depth: row.try_get("depth")?,
             });
         } else {
+            // Extract file extension properly with better validation (FIX Bug #4)
+            let extension = path.rsplit_once('.').and_then(|(_, ext)| {
+                // Validate extension:
+                // 1. Not empty
+                // 2. No path separators in extension
+                // 3. Reasonable length
+                // 4. Only alphanumeric characters
+                if !ext.is_empty()
+                    && !ext.contains(['\\', '/']) 
+                    && ext.len() <= 15
+                    && ext.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                {
+                    Some(ext.to_lowercase())
+                } else {
+                    None
+                }
+            });
             items.push(SearchItem::File {
                 path,
                 name,
                 allocated_size: row.try_get("allocated_size")?,
                 logical_size: row.try_get("logical_size")?,
-                extension: None,
+                extension,
             });
         }
     }

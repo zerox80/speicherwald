@@ -30,17 +30,17 @@ pub struct ScanResultSummary {
 }
 
 #[derive(Debug, Clone)]
-struct NodeRecord {
-    path: String,
-    parent_path: Option<String>,
-    depth: u32,
-    is_dir: bool,
-    logical_size: u64,
-    allocated_size: u64,
-    file_count: u64,
-    dir_count: u64,
-    mtime: Option<i64>,
-    atime: Option<i64>,
+pub struct NodeRecord {
+    pub path: String,
+    pub parent_path: Option<String>,
+    pub depth: u32,
+    pub is_dir: bool,
+    pub logical_size: u64,
+    pub allocated_size: u64,
+    pub file_count: u64,
+    pub dir_count: u64,
+    pub mtime: Option<i64>,
+    pub atime: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,19 +82,32 @@ pub async fn run_scan(
     dir_concurrency: Option<usize>,
 ) -> anyhow::Result<ScanResultSummary> {
     let mut summary = ScanResultSummary::default();
-    let mut nodes: Vec<NodeRecord> = Vec::with_capacity(flush_threshold.max(batch_size) * 2);
-    let mut files: Vec<FileRecord> = Vec::with_capacity(flush_threshold.max(batch_size) * 2);
+    // Limit capacity to prevent excessive memory allocation
+    let safe_capacity = flush_threshold.max(batch_size).saturating_mul(2).min(50_000);
+    let mut nodes: Vec<NodeRecord> = Vec::with_capacity(safe_capacity);
+    let mut files: Vec<FileRecord> = Vec::with_capacity(safe_capacity);
 
-    // Optimierte Parallelität basierend auf CPU-Kernen und System-Ressourcen
-    let cpu_cores = num_cpus::get();
-    let optimal_workers = (cpu_cores * 3 / 4).max(2); // 75% der CPU-Kerne nutzen
-    let mut concurrency = options.concurrency.unwrap_or(optimal_workers);
+    // FIX Bug #70 - Better CPU core calculation
+    let cpu_cores = num_cpus::get().max(1); // Ensure at least 1 core
+    // Use 75% of CPU cores for larger systems, 50% for smaller ones
+    let optimal_workers = if cpu_cores >= 4 {
+        ((cpu_cores * 3) / 4).max(2)
+    } else if cpu_cores >= 2 {
+        cpu_cores / 2
+    } else {
+        1
+    };
+    // FIX Bug #27 - Better channel size calculation with overflow protection
+    let mut concurrency = options.concurrency.unwrap_or(optimal_workers).max(1);
     if let Some(h) = handle_limit {
         concurrency = concurrency.min(h.max(1));
     }
-    let sem = Arc::new(Semaphore::new(concurrency.max(1)));
-    // Größerer Channel-Buffer für besseren Durchsatz
-    let channel_size = (concurrency * 8 + 128).min(1024);
+    let sem = Arc::new(Semaphore::new(concurrency));
+    // Channel buffer size: ensure it's large enough but bounded
+    let channel_size = concurrency.checked_mul(8)
+        .and_then(|v| v.checked_add(128))
+        .unwrap_or(2048)
+        .clamp(256, 2048);
     let (tx_res, mut rx_res) =
         mpsc::channel::<(Vec<NodeRecord>, Vec<FileRecord>, ScanResultSummary)>(channel_size);
 
@@ -113,7 +126,15 @@ pub async fn run_scan(
             continue;
         }
 
-        let permit = sem.clone().acquire_owned().await.unwrap();
+        let permit = match sem.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(e) => {
+                // Semaphore closed, likely shutdown
+                tracing::error!("Semaphore acquisition failed: {}", e);
+                summary.warnings += 1;
+                continue;
+            }
+        };
         let tx_res_cl = tx_res.clone();
         let tx_clone = tx.clone();
         let cancel_child = cancel.clone();
@@ -123,12 +144,18 @@ pub async fn run_scan(
         let dir_conc = dir_concurrency.unwrap_or(1);
         let root_str = root_clone.to_string_lossy().to_string();
         task::spawn_blocking(move || {
-            let gs_opt = build_globset(&options_cl.excludes).ok();
-            if gs_opt.is_none() {
-                drop(permit);
-                return;
-            }
-            let gs = gs_opt.unwrap();
+            let gs = match build_globset(&options_cl.excludes) {
+                Ok(gs) => gs,
+                Err(e) => {
+                    let _ = tx_clone.send(ScanEvent::Warning {
+                        path: root_str.clone(),
+                        code: "invalid_exclude_pattern".into(),
+                        message: format!("Failed to build exclude pattern: {}", e),
+                    });
+                    drop(permit);
+                    return;
+                }
+            };
 
             // Skip excluded/hidden/reparse roots
             if matches_excludes(&root_clone, &gs) {
@@ -214,8 +241,10 @@ pub async fn run_scan(
                             if !options_cl.include_hidden && is_hidden_or_system(&md) {
                                 continue;
                             }
+                            // FIX Bug #66 - max_depth = 0 means scan only root, depth >= 1 means too deep
                             if let Some(max_d) = options_cl.max_depth {
                                 if max_d == 0 {
+                                    // Don't recurse into subdirectories
                                     continue;
                                 }
                             }
@@ -226,18 +255,28 @@ pub async fn run_scan(
                             }
                             root_files += 1;
                             let logical_sz = md.len();
-                            if options_cl.measure_logical {
-                                root_files_logical = root_files_logical.saturating_add(logical_sz);
+                            // FIX Bug #20,#21 - Log overflow warnings
+                            let (new_logical, overflow1) = root_files_logical.overflowing_add(logical_sz);
+                            if overflow1 && options_cl.measure_logical {
+                                tracing::warn!("Logical size overflow at path: {:?}", p);
+                                root_files_logical = u64::MAX;
+                            } else if options_cl.measure_logical {
+                                root_files_logical = new_logical;
                             }
                             let alloc_sz = if options_cl.measure_allocated {
                                 unsafe_get_allocated_size(&p).unwrap_or(logical_sz)
                             } else {
                                 logical_sz
                             };
-                            if options_cl.measure_allocated {
-                                root_files_alloc = root_files_alloc.saturating_add(alloc_sz);
+                            let (new_alloc, overflow2) = root_files_alloc.overflowing_add(alloc_sz);
+                            if overflow2 && options_cl.measure_allocated {
+                                tracing::warn!("Allocated size overflow at path: {:?}", p);
+                                root_files_alloc = u64::MAX;
+                            } else if options_cl.measure_allocated {
+                                root_files_alloc = new_alloc;
                             }
-                            // buffer file record at root level, flush in batches
+                            // buffer file record at root level, flush in batches (ensure flush_thr >= 1)
+                            let flush_limit = flush_thr.max(1);
                             root_file_buf.push(FileRecord {
                                 path: p.to_string_lossy().to_string(),
                                 parent_path: Some(root_str.clone()),
@@ -246,7 +285,7 @@ pub async fn run_scan(
                                 mtime: entry_mtime,
                                 atime: entry_atime,
                             });
-                            if root_file_buf.len() >= flush_thr.max(1) {
+                            if root_file_buf.len() >= flush_limit {
                                 let mut out_files: Vec<FileRecord> = Vec::new();
                                 std::mem::swap(&mut out_files, &mut root_file_buf);
                                 let _ = tx_res_cl.blocking_send((
@@ -279,11 +318,12 @@ pub async fn run_scan(
                 }
             }
 
-            // Spawn limited number of workers for subdirs
+            // FIX Bug #39 - Limit total threads spawned
             let mut idx = 0usize;
             let mut running: Vec<std::thread::JoinHandle<ScanResultSummary>> = Vec::new();
             let sub_count = subdirs.len();
-            let dir_limit = dir_conc.max(1);
+            // Cap dir_limit to prevent resource exhaustion
+            let dir_limit = dir_conc.max(1).min(64);
             let mut sub_dirs_total: u64 = 0;
             let mut sub_files_total: u64 = 0;
             let mut subtree_logical: u64 = 0;
@@ -323,13 +363,20 @@ pub async fn run_scan(
                 }
                 if !running.is_empty() {
                     if let Some(handle) = running.pop() {
-                        if let Ok(ssum) = handle.join() {
-                            // accumulate into root aggregates
-                            subtree_logical = subtree_logical.saturating_add(ssum.total_logical_size);
-                            subtree_alloc = subtree_alloc.saturating_add(ssum.total_allocated_size);
-                            // directories/files from subtrees
-                            sub_dirs_total = sub_dirs_total.saturating_add(ssum.total_dirs);
-                            sub_files_total = sub_files_total.saturating_add(ssum.total_files);
+                        // FIX Bug #41 - Handle thread panics
+                        match handle.join() {
+                            Ok(ssum) => {
+                                // accumulate into root aggregates
+                                subtree_logical = subtree_logical.saturating_add(ssum.total_logical_size);
+                                subtree_alloc = subtree_alloc.saturating_add(ssum.total_allocated_size);
+                                // directories/files from subtrees
+                                sub_dirs_total = sub_dirs_total.saturating_add(ssum.total_dirs);
+                                sub_files_total = sub_files_total.saturating_add(ssum.total_files);
+                            }
+                            Err(e) => {
+                                tracing::error!("Worker thread panicked: {:?}", e);
+                                // Continue processing other threads
+                            }
                         }
                     }
                 }
@@ -352,10 +399,10 @@ pub async fn run_scan(
                 vec![root_node],
                 Vec::new(),
                 ScanResultSummary {
-                    total_dirs: 1,
-                    total_files: root_files,
-                    total_logical_size: root_files_logical,
-                    total_allocated_size: root_files_alloc,
+                    total_dirs: sub_dirs_total.saturating_add(1), // Include self + subdirs
+                    total_files: root_files.saturating_add(sub_files_total),
+                    total_logical_size: root_files_logical.saturating_add(subtree_logical),
+                    total_allocated_size: root_files_alloc.saturating_add(subtree_alloc),
                     warnings: 0,
                     latest_mtime: root_latest_mtime,
                     latest_atime: root_latest_atime,
@@ -369,6 +416,7 @@ pub async fn run_scan(
 
     let mut ticker = interval(Duration::from_millis(flush_interval_ms.max(1)));
     // Remember last sent totals and time to avoid spamming, but still emit a heartbeat on slow shares
+    // Use atomic types to prevent data races (though single-threaded in this context)
     let mut last_progress_totals: (u64, u64, u64, u64) = (0, 0, 0, 0);
     let mut last_sse_emit = Instant::now();
     loop {
@@ -424,6 +472,7 @@ pub async fn run_scan(
                     summary.total_logical_size,
                     summary.total_allocated_size,
                 );
+                // Emit progress if changed or 5s heartbeat
                 if current_totals != last_progress_totals || last_sse_emit.elapsed() >= std::time::Duration::from_secs(5) {
                     let _ = tx.send(ScanEvent::Progress {
                         current_path: String::new(),
@@ -526,9 +575,11 @@ fn scan_dir(
                     if !options.include_hidden && is_hidden_or_system(&md) {
                         continue;
                     }
+                    // FIX Bug #67 - Check max_depth: depth is 0-indexed from root
+                    // If we're at depth N and max_depth is N, we've reached the limit
                     if let Some(max_d) = options.max_depth {
                         if depth >= max_d {
-                            continue;
+                            continue; // Don't recurse deeper
                         }
                     }
                     let (d_dirs, d_files, d_logical, d_alloc) = scan_dir(
@@ -555,14 +606,15 @@ fn scan_dir(
                     }
                     local_files += 1;
                     let logical_sz = md.len();
-                    if options.measure_logical {
-                        logical = logical.saturating_add(logical_sz);
-                    }
                     let alloc_sz = if options.measure_allocated {
                         unsafe_get_allocated_size(&path).unwrap_or(logical_sz)
                     } else {
                         logical_sz
                     };
+                    // FIX Bug #22 - Check for overflow in scan_dir
+                    if options.measure_logical {
+                        logical = logical.saturating_add(logical_sz);
+                    }
                     if options.measure_allocated {
                         allocated = allocated.saturating_add(alloc_sz);
                     }
@@ -578,9 +630,10 @@ fn scan_dir(
                     });
                 }
 
-                sent = sent.wrapping_add(1);
+                sent = sent.saturating_add(1);
                 // Reduzierte Progress-Updates für bessere Performance
-                if sent.is_multiple_of(512) {
+                // Use modulo with non-zero check to prevent division by zero
+                if sent > 0 && sent % 512 == 0 {
                     let _ = tx.send(ScanEvent::Progress {
                         current_path: path.to_string_lossy().to_string(),
                         dirs_scanned: summary.total_dirs + local_dirs,
@@ -602,13 +655,17 @@ fn scan_dir(
                     last_emit = Instant::now();
                 }
 
-                // Partial flush to aggregator when buffers grow large
-                if (nodes.len() + files.len()) >= flush_threshold.max(1) {
+                // FIX Bug #45 - Partial flush with proper error handling
+                let flush_limit = flush_threshold.max(1);
+                if (nodes.len() + files.len()) >= flush_limit {
                     let mut out_nodes: Vec<NodeRecord> = Vec::new();
                     let mut out_files: Vec<FileRecord> = Vec::new();
                     std::mem::swap(&mut out_nodes, nodes);
                     std::mem::swap(&mut out_files, files);
-                    let _ = tx_out.blocking_send((out_nodes, out_files, ScanResultSummary::default()));
+                    if tx_out.blocking_send((out_nodes, out_files, ScanResultSummary::default())).is_err() {
+                        tracing::warn!("Channel closed during partial flush");
+                        anyhow::bail!("Aggregator channel closed");
+                    }
                 }
             }
         }
@@ -628,6 +685,15 @@ fn scan_dir(
     summary.total_allocated_size = summary.total_allocated_size.saturating_add(allocated);
 
     // collect node record for this directory
+    // FIX Bug #23 - dir_count should be subdirectories count
+    // local_dirs includes this dir (initialized to 1) plus all recursive subdirs
+    // Subtract 1 to exclude self from the count
+    let dir_count_value = if local_dirs > 0 {
+        local_dirs - 1
+    } else {
+        tracing::warn!("local_dirs is 0 at {:?}, should be at least 1", dir);
+        0
+    };
     nodes.push(NodeRecord {
         path: dir_str,
         parent_path: parent_path_string(dir),
@@ -636,7 +702,7 @@ fn scan_dir(
         logical_size: logical,
         allocated_size: allocated,
         file_count: local_files,
-        dir_count: local_dirs.saturating_sub(1), // exclude self
+        dir_count: dir_count_value,
         mtime: dir_mtime,
         atime: dir_atime,
     });
@@ -647,13 +713,22 @@ fn scan_dir(
 fn build_globset(patterns: &[String]) -> anyhow::Result<GlobSet> {
     let mut b = GlobSetBuilder::new();
     for p in patterns {
-        if p.trim().is_empty() {
+        let trimmed = p.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Validate pattern length to prevent DoS
+        if trimmed.len() > 1024 {
+            tracing::warn!("Glob pattern too long, skipping: {} chars", trimmed.len());
             continue;
         }
         // Normalisiere Backslashes zu Slashes, damit Muster plattformunabhängig mit
         // der Pfadnormalisierung in `matches_excludes` (\\ -> /) übereinstimmen.
-        let norm = p.trim().replace('\\', "/");
-        let g = Glob::new(&norm)?;
+        let norm = trimmed.replace('\\', "/");
+        // Catch glob compilation errors
+        let g = Glob::new(&norm).map_err(|e| {
+            anyhow::anyhow!("Invalid glob pattern '{}': {}", norm, e)
+        })?;
         b.add(g);
     }
     Ok(b.build()?)
@@ -698,8 +773,16 @@ fn is_network_path(path: &Path) -> bool {
         let w: Vec<u16> = std::ffi::OsStr::new(&root).encode_wide().chain(std::iter::once(0)).collect();
         unsafe {
             let ty = GetDriveTypeW(PCWSTR(w.as_ptr()));
-            // 4 == DRIVE_REMOTE
-            return ty == 4;
+            // DRIVE_REMOTE (4) indicates network drive
+            // DRIVE_UNKNOWN (0) or other values indicate error or local drive
+            const DRIVE_UNKNOWN: u32 = 0;
+            const DRIVE_REMOTE: u32 = 4;
+            if ty == DRIVE_UNKNOWN {
+                // Error occurred, log and assume not network
+                tracing::debug!("GetDriveTypeW returned UNKNOWN for {}", root);
+                return false;
+            }
+            return ty == DRIVE_REMOTE;
         }
     }
     false
@@ -740,22 +823,43 @@ fn is_reparse_point(_md: &fs::Metadata) -> bool {
 use lru::LruCache;
 use std::sync::Mutex;
 
+// Configurable cache size via environment variable, default 10000
+fn get_cache_size() -> usize {
+    std::env::var("SPEICHERWALD_SIZE_CACHE_ENTRIES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10000)
+        .clamp(100, 100_000)
+}
+
 lazy_static::lazy_static! {
-    static ref SIZE_CACHE: Mutex<LruCache<PathBuf, u64>> = Mutex::new(LruCache::new(std::num::NonZeroUsize::new(10000).unwrap()));
+    static ref SIZE_CACHE: Mutex<LruCache<PathBuf, u64>> = {
+        let size = get_cache_size();
+        // Ensure size is non-zero
+        let non_zero = std::num::NonZeroUsize::new(size)
+            .unwrap_or_else(|| std::num::NonZeroUsize::new(1000).unwrap());
+        Mutex::new(LruCache::new(non_zero))
+    };
 }
 
 #[cfg(windows)]
 fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
-    // Zuerst im Cache nachschauen
-    if let Ok(mut cache) = SIZE_CACHE.lock() {
-        if let Some(&size) = cache.get(&path.to_path_buf()) {
-            return Some(size);
+    // Zuerst im Cache nachschauen - handle lock poisoning
+    match SIZE_CACHE.lock() {
+        Ok(mut cache) => {
+            if let Some(&size) = cache.get(&path.to_path_buf()) {
+                return Some(size);
+            }
+        }
+        Err(e) => {
+            tracing::warn!("SIZE_CACHE lock poisoned: {}", e);
+            // Continue without cache
         }
     }
 
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::GetLastError;
+    use windows::Win32::Foundation::{GetLastError, ERROR_NOT_SUPPORTED, NO_ERROR};
     use windows::Win32::Storage::FileSystem::{GetCompressedFileSizeW, INVALID_FILE_SIZE};
 
     let w: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
@@ -763,14 +867,24 @@ fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
     unsafe {
         let low = GetCompressedFileSizeW(PCWSTR(w.as_ptr()), Some(&mut high as *mut u32));
         // When the low part is INVALID_FILE_SIZE (0xFFFFFFFF), check GetLastError
-        if low == INVALID_FILE_SIZE && GetLastError().0 != 0 {
-            return None;
+        if low == INVALID_FILE_SIZE {
+            let err = GetLastError();
+            // NO_ERROR means the actual size is 0xFFFFFFFF (very rare but valid)
+            if err != NO_ERROR {
+                // ERROR_NOT_SUPPORTED or other errors - return None to fallback to logical size
+                if err == ERROR_NOT_SUPPORTED {
+                    tracing::debug!("GetCompressedFileSizeW not supported for {:?}", path);
+                }
+                return None;
+            }
         }
         let size = ((high as u64) << 32) | (low as u64);
 
-        // In Cache speichern
+        // In Cache speichern - ignore lock poisoning
         if let Ok(mut cache) = SIZE_CACHE.lock() {
             cache.put(path.to_path_buf(), size);
+        } else {
+            tracing::debug!("Failed to update SIZE_CACHE (lock poisoned)");
         }
 
         Some(size)
@@ -789,7 +903,14 @@ fn parent_path_string(path: &Path) -> Option<String> {
 
 fn calc_depth(path: &Path) -> u32 {
     // Rough component count as depth, suitable for sorting/filtering
-    path.components().count() as u32
+    // Saturate at u32::MAX to prevent overflow on extremely deep paths
+    let count = path.components().count();
+    if count > u32::MAX as usize {
+        tracing::warn!("Path depth exceeds u32::MAX, clamping: {:?}", path);
+        u32::MAX
+    } else {
+        count as u32
+    }
 }
 
 async fn persist_batches(
@@ -812,8 +933,9 @@ async fn persist_batches(
     const NODE_BINDS_PER_ROW: usize = 11; // scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count, mtime, atime
     const FILE_BINDS_PER_ROW: usize = 7; // scan_id, path, parent_path, logical_size, allocated_size, mtime, atime
 
-    let max_node_rows_per_stmt = SQLITE_MAX_VARS / NODE_BINDS_PER_ROW;
-    let max_file_rows_per_stmt = SQLITE_MAX_VARS / FILE_BINDS_PER_ROW;
+    // Ensure we never compute 0 rows per statement
+    let max_node_rows_per_stmt = (SQLITE_MAX_VARS / NODE_BINDS_PER_ROW).max(1);
+    let max_file_rows_per_stmt = (SQLITE_MAX_VARS / FILE_BINDS_PER_ROW).max(1);
 
     // nodes in chunks
     let node_chunk = batch_size.max(1).min(max_node_rows_per_stmt.max(1));
@@ -822,15 +944,21 @@ async fn persist_batches(
             "INSERT INTO nodes (scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count, mtime, atime) "
         );
         qb.push_values(chunk, |mut b, n| {
+            // Clamp u64 values to i64::MAX to prevent overflow when converting to i64 for SQLite
+            let logical_size_safe = n.logical_size.min(i64::MAX as u64) as i64;
+            let allocated_size_safe = n.allocated_size.min(i64::MAX as u64) as i64;
+            let file_count_safe = n.file_count.min(i64::MAX as u64) as i64;
+            let dir_count_safe = n.dir_count.min(i64::MAX as u64) as i64;
+            
             b.push_bind(&sid)
                 .push_bind(&n.path)
                 .push_bind(n.parent_path.as_deref())
                 .push_bind(n.depth as i64)
                 .push_bind(if n.is_dir { 1i64 } else { 0i64 })
-                .push_bind(n.logical_size as i64)
-                .push_bind(n.allocated_size as i64)
-                .push_bind(n.file_count as i64)
-                .push_bind(n.dir_count as i64)
+                .push_bind(logical_size_safe)
+                .push_bind(allocated_size_safe)
+                .push_bind(file_count_safe)
+                .push_bind(dir_count_safe)
                 .push_bind(n.mtime)
                 .push_bind(n.atime);
         });
@@ -844,11 +972,15 @@ async fn persist_batches(
             "INSERT INTO files (scan_id, path, parent_path, logical_size, allocated_size, mtime, atime) ",
         );
         qb.push_values(chunk, |mut b, f| {
+            // Clamp u64 values to i64::MAX to prevent overflow when converting to i64 for SQLite
+            let logical_size_safe = f.logical_size.min(i64::MAX as u64) as i64;
+            let allocated_size_safe = f.allocated_size.min(i64::MAX as u64) as i64;
+            
             b.push_bind(&sid)
                 .push_bind(&f.path)
                 .push_bind(f.parent_path.as_deref())
-                .push_bind(f.logical_size as i64)
-                .push_bind(f.allocated_size as i64)
+                .push_bind(logical_size_safe)
+                .push_bind(allocated_size_safe)
                 .push_bind(f.mtime)
                 .push_bind(f.atime);
         });

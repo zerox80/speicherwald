@@ -1,0 +1,2 @@
+2025-10-12T12:39:05.431188Z  INFO speicherwald: Creating SQLite database at sqlite://data/speicherwald.db
+2025-10-12T12:39:05.493030Z  INFO speicherwald: SpeicherWald listening on http://127.0.0.1:8080

@@ -65,7 +65,11 @@ pub async fn export_scan(
     }
 
     let requested_limit = query.limit.unwrap_or(10_000);
-    let limit = requested_limit.clamp(1, 100_000);
+    // Log warning if user requests excessive limit
+    if requested_limit > 25_000 {
+        tracing::warn!("Export limit clamped from {} to 25000 for scan {}", requested_limit, id);
+    }
+    let limit = requested_limit.clamp(1, 25_000); // Reduced to prevent server overload and memory issues
     let scope = query.scope.as_deref().unwrap_or("all");
 
     match query.format.as_str() {
@@ -155,10 +159,10 @@ async fn export_csv(state: AppState, scan_id: Uuid, scope: &str, limit: i64) -> 
 
     let mut response = csv_content.into_response();
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
-    response.headers_mut().insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"scan_{}.csv\"", scan_id)).unwrap(),
-    );
+    let filename = format!("attachment; filename=\"scan_{}.csv\"", scan_id);
+    if let Ok(header_val) = HeaderValue::from_str(&filename) {
+        response.headers_mut().insert(header::CONTENT_DISPOSITION, header_val);
+    }
     Ok(response)
 }
 
@@ -228,15 +232,24 @@ async fn export_json(
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));
-    response.headers_mut().insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"scan_{}.json\"", scan_id)).unwrap(),
-    );
+    let filename = format!("attachment; filename=\"scan_{}.json\"", scan_id);
+    if let Ok(header_val) = HeaderValue::from_str(&filename) {
+        response.headers_mut().insert(header::CONTENT_DISPOSITION, header_val);
+    }
     Ok(response)
 }
 
 fn escape_csv(s: &str) -> String {
-    s.replace('"', "\"\"")
+    // FIX Bug #55 - Proper CSV escaping: double quotes become two double quotes
+    // More efficient: do all replacements in one pass
+    s.chars()
+        .flat_map(|c| match c {
+            '"' => vec!['"', '"'], // Escape double quote as ""
+            '\n' | '\r' => vec![' '], // Replace newlines with space
+            c if c.is_control() => vec![' '], // Replace other control chars
+            c => vec![c],
+        })
+        .collect()
 }
 
 // Statistics Export

@@ -116,9 +116,7 @@ fn perform_move(req: MovePathRequest) -> AppResult<MoveOutcome> {
             fs::create_dir_all(parent)?;
         }
     } else if !dest_path.exists() {
-        return Err(AppError::BadRequest(
-            "destination path must include a parent directory".into(),
-        ));
+        return Err(AppError::BadRequest("destination path must include a parent directory".into()));
     }
 
     let metadata = fs::metadata(&source_path)?;

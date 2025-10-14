@@ -138,7 +138,7 @@ pub async fn run_scan(
         let options_cl = options.clone();
         let root_clone = root_path.clone();
         let flush_thr = flush_threshold;
-        let dir_conc = dir_concurrency.unwrap_or(1);
+        let dir_conc = dir_concurrency.or(options_cl.concurrency).unwrap_or(1);
         let root_str = root_clone.to_string_lossy().to_string();
         task::spawn_blocking(move || {
             let gs = match build_globset(&options_cl.excludes) {
@@ -260,10 +260,10 @@ pub async fn run_scan(
                                 logical_sz
                             };
                             let (new_alloc, overflow2) = root_files_alloc.overflowing_add(alloc_sz);
-                            if overflow2 && options_cl.measure_allocated {
+                            if overflow2 {
                                 tracing::warn!("Allocated size overflow at path: {:?}", p);
                                 root_files_alloc = u64::MAX;
-                            } else if options_cl.measure_allocated {
+                            } else {
                                 root_files_alloc = new_alloc;
                             }
                             // buffer file record at root level, flush in batches (ensure flush_thr >= 1)
@@ -609,8 +609,12 @@ fn scan_dir(
                     if options.measure_logical {
                         logical = logical.saturating_add(logical_sz);
                     }
-                    if options.measure_allocated {
-                        allocated = allocated.saturating_add(alloc_sz);
+                    let (new_alloc, overflow_alloc) = allocated.overflowing_add(alloc_sz);
+                    if overflow_alloc {
+                        tracing::warn!("Allocated size overflow at path: {:?}", path);
+                        allocated = u64::MAX;
+                    } else {
+                        allocated = new_alloc;
                     }
 
                     // collect file record

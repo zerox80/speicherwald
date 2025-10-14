@@ -127,7 +127,7 @@ pub async fn create_scan(
     let flush_threshold = state.config.scanner.flush_threshold;
     let flush_interval_ms = state.config.scanner.flush_interval_ms;
     let handle_limit = state.config.scanner.handle_limit;
-    let dir_concurrency = state.config.scanner.dir_concurrency;
+    let dir_concurrency = options.concurrency.or(state.config.scanner.dir_concurrency);
     let jobs_map = state.jobs.clone();
     let metrics = state.metrics.clone();
 
@@ -389,13 +389,12 @@ async fn get_subtree_totals(
     root: &str,
     db: &sqlx::SqlitePool,
 ) -> Result<(i64, i64), sqlx::Error> {
-    if let Some(row) = sqlx::query(
-        "SELECT file_count, dir_count FROM nodes WHERE scan_id = ?1 AND path = ?2 LIMIT 1",
-    )
-    .bind(scan_id.to_string())
-    .bind(root)
-    .fetch_optional(db)
-    .await?
+    if let Some(row) =
+        sqlx::query("SELECT file_count, dir_count FROM nodes WHERE scan_id = ?1 AND path = ?2 LIMIT 1")
+            .bind(scan_id.to_string())
+            .bind(root)
+            .fetch_optional(db)
+            .await?
     {
         let total_files: i64 = row.try_get("file_count").unwrap_or(0);
         let total_dirs: i64 = row.try_get("dir_count").unwrap_or(0);
@@ -516,10 +515,14 @@ pub async fn get_tree(
     Path(id): Path<Uuid>,
     Query(q): Query<TreeQuery>,
 ) -> AppResult<impl IntoResponse> {
+    if let Some(depth) = q.depth {
+        if depth < 0 {
+            return Err(AppError::BadRequest("depth must be >= 0".into()));
+        }
+    }
     // Determine base depth if path provided
     let mut base_depth: Option<i64> = None;
     if let Some(ref p) = q.path {
-        let p_norm = normalize_query_path(p);
         // FIX Bug #50 - Validate path BEFORE normalization
         if p.len() > 4096 {
             return Err(AppError::BadRequest("Path too long".into()));
@@ -544,11 +547,6 @@ pub async fn get_tree(
     );
     qb.push_bind(id.to_string());
 
-    let mut pattern_eq: Option<String> = None;
-    let mut pattern_lo: Option<String> = None;
-    let mut pattern_hi: Option<String> = None;
-    let mut max_depth: Option<i64> = None;
-
     if let Some(ref p) = q.path {
         // Restrict to subtree: include the node itself and everything under it using a trailing separator
         let peq = normalize_query_path(p); // exact node path as stored
@@ -565,13 +563,10 @@ pub async fn get_tree(
         qb.push(" OR (path >= ").push_bind(pfx.clone());
         qb.push(" AND path < ").push_bind(pfx_upper.clone());
         qb.push("))");
-        pattern_eq = Some(peq);
-        pattern_lo = Some(pfx);
-        pattern_hi = Some(pfx_upper);
     }
     if let (Some(bd), Some(d)) = (base_depth, q.depth) {
-        max_depth = Some(bd + d);
-        qb.push(" AND depth <= ").push_bind(max_depth.unwrap());
+        let max_depth = bd + d;
+        qb.push(" AND depth <= ").push_bind(max_depth);
     }
 
     match q.sort.as_deref() {
@@ -693,7 +688,15 @@ pub async fn get_list(
     Query(q): Query<ListQuery>,
 ) -> AppResult<impl IntoResponse> {
     let limit = q.limit.unwrap_or(500).clamp(1, 2000);
-    let offset = q.offset.unwrap_or(0).max(0);
+    let offset_raw = q.offset.unwrap_or(0);
+    if offset_raw < 0 {
+        return Err(AppError::BadRequest("offset must be >= 0".into()));
+    }
+    let offset = usize::try_from(offset_raw).map_err(|_| AppError::BadRequest("offset too large".into()))?;
+    if offset > 10_000 {
+        return Err(AppError::BadRequest("offset too large".into()));
+    }
+    let limit_usize = limit as usize;
 
     // If no path specified, return the scan roots as directories
     if q.path.is_none() {
@@ -762,7 +765,7 @@ pub async fn get_list(
         }
         // simple sort
         sort_items(&mut items[..], q.sort.as_deref(), q.order.as_deref());
-        let slice = items.into_iter().skip(offset as usize).take(limit as usize).collect::<Vec<_>>();
+        let slice = items.into_iter().skip(offset).take(limit_usize).collect::<Vec<_>>();
         return Ok(Json(slice));
     }
 
@@ -832,7 +835,7 @@ pub async fn get_list(
     }
 
     sort_items(&mut items[..], q.sort.as_deref(), q.order.as_deref());
-    let slice = items.into_iter().skip(offset as usize).take(limit as usize).collect::<Vec<_>>();
+    let slice = items.into_iter().skip(offset).take(limit_usize).collect::<Vec<_>>();
     Ok(Json(slice))
 }
 

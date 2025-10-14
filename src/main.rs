@@ -199,7 +199,8 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     info!("SpeicherWald listening on http://{}", listener.local_addr()?);
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
+    axum::serve(listener, make_service).with_graceful_shutdown(shutdown_signal()).await?;
 
     Ok(())
 }

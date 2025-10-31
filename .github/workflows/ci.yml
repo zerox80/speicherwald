@@ -89,7 +89,7 @@ jobs:
       run: trunk build --release
     
     - name: Upload UI artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: ui-build
         path: ui/
@@ -119,7 +119,7 @@ jobs:
           cargo build --release -j 1
 
       - name: Upload desktop artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: speicherwald-desktop
           path: desktop/src-tauri/target/release/speicherwald-desktop.exe
@@ -151,7 +151,7 @@ jobs:
           python scripts/package_portable.py --include-desktop
 
       - name: Upload portable artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: portable-zip
           path: dist/*.zip

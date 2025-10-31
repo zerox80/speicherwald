@@ -108,7 +108,7 @@ jobs:
           override: true
 
       - name: Download UI artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: ui-build
           path: ui/
@@ -165,7 +165,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
 
       - name: Zip UI artifact
         run: |

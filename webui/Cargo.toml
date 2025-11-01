@@ -6,7 +6,7 @@ authors = ["SpeicherWald Contributors"]
 license = "GPL-3.0-or-later"
 
 [dependencies]
-dioxus = { version = "0.6", features = ["macro"] }
+dioxus = { version = "0.7", features = ["macro"] }
 dioxus-web = "0.7"
 dioxus-router = "0.6"
 serde = { version = "1", features = ["derive"] }

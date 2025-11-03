@@ -49,6 +49,7 @@ jobs:
     - name: Generate test coverage
       if: matrix.os == 'ubuntu-latest'
       run: |
+        rustup component add llvm-tools-preview
         cargo install cargo-tarpaulin
         cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
     
@@ -83,7 +84,10 @@ jobs:
     
     - name: Install Trunk
       run: cargo install trunk --locked
-    
+
+    - name: Add wasm32 target
+      run: rustup target add wasm32-unknown-unknown
+
     - name: Build WebUI
       working-directory: ./webui
       run: trunk build --release
@@ -138,6 +142,9 @@ jobs:
           override: true
           components: rustfmt, clippy
           target: wasm32-unknown-unknown
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
 
       - name: Setup Python
         uses: actions/setup-python@v6

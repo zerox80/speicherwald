@@ -10,32 +10,24 @@ mod tests {
     use speicherwald::routes::drives::list_drives;
     use speicherwald::state::AppState;
     use sqlx::SqlitePool;
-    use std::sync::Arc;
     use tower::ServiceExt;
     use axum::routing::get;
-    use dashmap::DashMap;
-    use tokio::sync::CancellationToken;
 
-    async fn setup_test_app(rate_limiter: Arc<EndpointRateLimiter>) -> Router {
+    async fn setup_test_app(rate_limiter: EndpointRateLimiter) -> Router {
         let config = AppConfig::default();
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
 
-        let state = AppState {
-            db: pool,
-            config,
-            metrics: Arc::new(Default::default()),
-            active_scans: Arc::new(DashMap::<String, CancellationToken>::new()),
-        };
+        let mut state = AppState::new(pool, config);
+        state.rate_limiter = rate_limiter;
 
         Router::new()
             .route("/api/drives", get(list_drives))
             .with_state(state)
-            .layer(axum::Extension(rate_limiter))
     }
 
     // Helper to create a rate limiter with specific limits for testing
-    fn create_rate_limiter(per_second: u64, burst: u64) -> Arc<EndpointRateLimiter> {
-        Arc::new(EndpointRateLimiter::new().with_limits("/drives", per_second, burst))
+    fn create_rate_limiter(max_requests: usize, window_seconds: u64) -> EndpointRateLimiter {
+        EndpointRateLimiter::new().with_limits(vec![("/drives", max_requests, window_seconds)])
     }
 
     #[tokio::test]

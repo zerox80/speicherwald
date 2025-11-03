@@ -20,6 +20,20 @@ pub struct ExportQuery {
     pub limit: Option<i64>,
 }
 
+fn format_node_csv(node: &NodeExport) -> String {
+    format!(
+        "Dir,\"{}\",\"{}\",{},{},{},{},{},{}\n",
+        escape_csv(&node.path),
+        escape_csv(node.parent_path.as_deref().unwrap_or("")),
+        node.depth,
+        if node.is_dir { 1 } else { 0 },
+        node.logical_size,
+        node.allocated_size,
+        node.file_count,
+        node.dir_count
+    )
+}
+
 #[derive(Debug, Serialize)]
 pub struct ExportData {
     pub scan_id: String,

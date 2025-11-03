@@ -6,15 +6,13 @@ mod tests {
         Router,
     };
     use speicherwald::config::AppConfig;
-    use speicherwald::metrics::Metrics;
+    use speicherwald::middleware::EndpointRateLimiter;
     use speicherwald::routes::health::{healthz, readyz, metrics, metrics_prometheus, version};
     use speicherwald::state::AppState;
     use sqlx::SqlitePool;
     use std::sync::Arc;
-    use dashmap::DashMap;
     use tower::ServiceExt;
     use axum::routing::get;
-    use tokio::sync::CancellationToken;
 
     async fn setup_test_app() -> Router {
         let config = AppConfig::default();
@@ -23,9 +21,10 @@ mod tests {
 
         let state = AppState {
             db: pool,
-            config,
-            metrics: Arc::new(Metrics::new()),
-            active_scans: Arc::new(DashMap::<String, CancellationToken>::new()),
+            jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            config: Arc::new(config),
+            metrics: speicherwald::metrics::Metrics::new(),
+            rate_limiter: EndpointRateLimiter::new(),
         };
 
         Router::new()
@@ -90,9 +89,10 @@ mod tests {
 
         let state = AppState {
             db: pool,
-            config,
-            metrics: Arc::new(Metrics::new()),
-            active_scans: Arc::new(DashMap::<String, CancellationToken>::new()),
+            jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            config: Arc::new(config),
+            metrics: speicherwald::metrics::Metrics::new(),
+            rate_limiter: EndpointRateLimiter::new(),
         };
 
         let app = Router::new()

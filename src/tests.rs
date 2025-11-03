@@ -116,6 +116,7 @@ mod tests {
             file_count: 20,
             dir_count: 3,
             mtime: None,
+            atime: None,
         };
         
         let file_item = ListItem::File {
@@ -125,6 +126,7 @@ mod tests {
             allocated_size: 200,
             logical_size: 180,
             mtime: None,
+            atime: None,
         };
         
         match dir_item {

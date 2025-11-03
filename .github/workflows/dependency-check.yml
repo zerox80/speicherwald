@@ -32,20 +32,14 @@ jobs:
           echo "## Security Audit Results" > audit-report.md
           echo "" >> audit-report.md
           echo "### Main Backend" >> audit-report.md
-          cargo audit --json > audit-main.json || true
-          cat audit-main.json >> audit-report.md
+          cargo audit --manifest-path Cargo.toml >> audit-report.md || true
           echo "" >> audit-report.md
           echo "### Desktop App" >> audit-report.md
-          cd desktop/src-tauri
-          cargo audit --json > audit-desktop.json || true
-          cat audit-desktop.json >> ../../audit-report.md
-          cd ../..
+          cargo audit --manifest-path desktop/src-tauri/Cargo.toml >> audit-report.md || true
           echo "" >> audit-report.md
           echo "### Web UI" >> audit-report.md
-          cd webui
-          cargo audit --json > audit-webui.json || true
-          cat audit-webui.json >> ../audit-report.md
-          cd ..
+          cargo audit --manifest-path webui/Cargo.toml >> audit-report.md || true
+          echo "" >> audit-report.md
 
       - name: Check for outdated dependencies
         id: outdated

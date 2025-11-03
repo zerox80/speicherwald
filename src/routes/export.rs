@@ -93,36 +93,10 @@ async fn export_csv(state: AppState, scan_id: Uuid, scope: &str, limit: i64) -> 
 
     if include_nodes {
         csv_content.push_str(NODE_HEADER);
-        let rows = sqlx::query(
-            "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count \
-             FROM nodes WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2",
-        )
-        .bind(scan_id.to_string())
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await?;
+        let nodes = fetch_nodes_export(&state, scan_id, limit).await?;
 
-        for row in rows {
-            let path: String = row.get("path");
-            let parent: Option<String> = row.get("parent_path");
-            let depth: i64 = row.get("depth");
-            let is_dir_flag: bool = row.get::<i64, _>("is_dir") != 0;
-            let logical_size: i64 = row.get("logical_size");
-            let allocated_size: i64 = row.get("allocated_size");
-            let file_count: i64 = row.get("file_count");
-            let dir_count: i64 = row.get("dir_count");
-
-            csv_content.push_str(&format!(
-                "Node,\"{}\",\"{}\",{},{},{},{},{},{}\n",
-                escape_csv(&path),
-                escape_csv(parent.as_deref().unwrap_or("")),
-                depth,
-                if is_dir_flag { 1 } else { 0 },
-                logical_size,
-                allocated_size,
-                file_count,
-                dir_count,
-            ));
+        for node in nodes {
+            csv_content.push_str(&format_node_csv(&node));
         }
     }
 
@@ -132,27 +106,15 @@ async fn export_csv(state: AppState, scan_id: Uuid, scope: &str, limit: i64) -> 
 
     if include_files {
         csv_content.push_str(FILE_HEADER);
-        let rows = sqlx::query(
-            "SELECT path, parent_path, logical_size, allocated_size \
-             FROM files WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2",
-        )
-        .bind(scan_id.to_string())
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await?;
+        let files = fetch_files_export(&state, scan_id, limit).await?;
 
-        for row in rows {
-            let path: String = row.get("path");
-            let parent: Option<String> = row.get("parent_path");
-            let logical_size: i64 = row.get("logical_size");
-            let allocated_size: i64 = row.get("allocated_size");
-
+        for file in files {
             csv_content.push_str(&format!(
                 "File,\"{}\",\"{}\",{},{}\n",
-                escape_csv(&path),
-                escape_csv(parent.as_deref().unwrap_or("")),
-                logical_size,
-                allocated_size,
+                escape_csv(&file.path),
+                escape_csv(file.parent_path.as_deref().unwrap_or("")),
+                file.logical_size,
+                file.allocated_size,
             ));
         }
     }
@@ -181,49 +143,11 @@ async fn export_json(
     };
 
     if scope == "all" || scope == "nodes" {
-        let nodes =
-            sqlx::query("SELECT * FROM nodes WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2")
-                .bind(scan_id.to_string())
-                .bind(limit)
-                .fetch_all(&state.db)
-                .await?;
-
-        let node_exports: Vec<NodeExport> = nodes
-            .into_iter()
-            .map(|row| NodeExport {
-                path: row.get("path"),
-                parent_path: row.get("parent_path"),
-                depth: row.get("depth"),
-                is_dir: row.get::<i64, _>("is_dir") != 0,
-                logical_size: row.get("logical_size"),
-                allocated_size: row.get("allocated_size"),
-                file_count: row.get("file_count"),
-                dir_count: row.get("dir_count"),
-            })
-            .collect();
-
-        export_data.nodes = Some(node_exports);
+        export_data.nodes = Some(fetch_nodes_export(&state, scan_id, limit).await?);
     }
 
     if scope == "all" || scope == "files" {
-        let files =
-            sqlx::query("SELECT * FROM files WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2")
-                .bind(scan_id.to_string())
-                .bind(limit)
-                .fetch_all(&state.db)
-                .await?;
-
-        let file_exports: Vec<FileExport> = files
-            .into_iter()
-            .map(|row| FileExport {
-                path: row.get("path"),
-                parent_path: row.get("parent_path"),
-                logical_size: row.get("logical_size"),
-                allocated_size: row.get("allocated_size"),
-            })
-            .collect();
-
-        export_data.files = Some(file_exports);
+        export_data.files = Some(fetch_files_export(&state, scan_id, limit).await?);
     }
 
     use axum::http::HeaderValue;
@@ -250,6 +174,92 @@ fn escape_csv(s: &str) -> String {
             c => vec![c],
         })
         .collect()
+}
+
+const EXPORT_CHUNK_SIZE: i64 = 800;
+
+async fn fetch_nodes_export(state: &AppState, scan_id: Uuid, limit: i64) -> Result<Vec<NodeExport>, sqlx::Error> {
+    let mut results = Vec::new();
+    let mut offset: i64 = 0;
+    let sid = scan_id.to_string();
+
+    while offset < limit {
+        let batch = (limit - offset).min(EXPORT_CHUNK_SIZE);
+        let rows = sqlx::query(
+            "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count \
+             FROM nodes WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2 OFFSET ?3",
+        )
+        .bind(&sid)
+        .bind(batch)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await?;
+
+        if rows.is_empty() {
+            break;
+        }
+
+        for row in rows.iter() {
+            results.push(NodeExport {
+                path: row.get("path"),
+                parent_path: row.get("parent_path"),
+                depth: row.get("depth"),
+                is_dir: row.get::<i64, _>("is_dir") != 0,
+                logical_size: row.get("logical_size"),
+                allocated_size: row.get("allocated_size"),
+                file_count: row.get("file_count"),
+                dir_count: row.get("dir_count"),
+            });
+        }
+
+        let fetched = rows.len() as i64;
+        offset += fetched;
+        if fetched < batch {
+            break;
+        }
+    }
+
+    Ok(results)
+}
+
+async fn fetch_files_export(state: &AppState, scan_id: Uuid, limit: i64) -> Result<Vec<FileExport>, sqlx::Error> {
+    let mut results = Vec::new();
+    let mut offset: i64 = 0;
+    let sid = scan_id.to_string();
+
+    while offset < limit {
+        let batch = (limit - offset).min(EXPORT_CHUNK_SIZE);
+        let rows = sqlx::query(
+            "SELECT path, parent_path, logical_size, allocated_size \
+             FROM files WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2 OFFSET ?3",
+        )
+        .bind(&sid)
+        .bind(batch)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await?;
+
+        if rows.is_empty() {
+            break;
+        }
+
+        for row in rows.iter() {
+            results.push(FileExport {
+                path: row.get("path"),
+                parent_path: row.get("parent_path"),
+                logical_size: row.get("logical_size"),
+                allocated_size: row.get("allocated_size"),
+            });
+        }
+
+        let fetched = rows.len() as i64;
+        offset += fetched;
+        if fetched < batch {
+            break;
+        }
+    }
+
+    Ok(results)
 }
 
 // Statistics Export

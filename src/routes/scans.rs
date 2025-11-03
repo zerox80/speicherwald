@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::{Path as StdPath, PathBuf}, time::Duration};
 
 use axum::response::sse::{Event, Sse};
 use axum::{
@@ -483,20 +483,63 @@ fn escape_like_pattern(p: &str) -> String {
     out
 }
 
-fn normalize_query_path(p: &str) -> String {
+fn normalize_query_path(p: &str) -> AppResult<String> {
+    if p.trim().is_empty() {
+        return Err(AppError::BadRequest("path must not be empty".into()));
+    }
+    if p.contains('\0') {
+        return Err(AppError::BadRequest("path contains null byte".into()));
+    }
+
     #[cfg(windows)]
     {
-        let mut s = p.replace('/', "\\");
-        // Add trailing backslash to drive letters (C: -> C:\)
-        if s.len() == 2 && s.chars().nth(1) == Some(':') {
-            s.push('\\');
+        use std::path::Component;
+
+        let normalized = p.replace('/', "\\");
+        let path = StdPath::new(&normalized);
+        let mut sanitized = PathBuf::new();
+
+        for component in path.components() {
+            match component {
+                Component::ParentDir => {
+                    return Err(AppError::BadRequest("path traversal is not allowed".into()))
+                }
+                Component::CurDir => continue,
+                _ => sanitized.push(component.as_os_str()),
+            }
         }
-        s
+
+        let mut result = sanitized.to_string_lossy().to_string();
+        if result.is_empty() {
+            return Err(AppError::BadRequest("normalized path is empty".into()));
+        }
+        if result.len() == 2 && result.chars().nth(1) == Some(':') {
+            result.push('\\');
+        }
+        Ok(result)
     }
     #[cfg(not(windows))]
     {
-        // On Unix, keep forward slashes
-        p.to_string()
+        use std::path::Component;
+
+        let path = StdPath::new(p);
+        let mut sanitized = PathBuf::new();
+
+        for component in path.components() {
+            match component {
+                Component::ParentDir => {
+                    return Err(AppError::BadRequest("path traversal is not allowed".into()))
+                }
+                Component::CurDir => continue,
+                _ => sanitized.push(component.as_os_str()),
+            }
+        }
+
+        let result = sanitized.to_string_lossy().to_string();
+        if result.is_empty() {
+            return Err(AppError::BadRequest("normalized path is empty".into()));
+        }
+        Ok(result)
     }
 }
 
@@ -522,12 +565,13 @@ pub async fn get_tree(
     }
     // Determine base depth if path provided
     let mut base_depth: Option<i64> = None;
+    let mut normalized_path: Option<String> = None;
     if let Some(ref p) = q.path {
         // FIX Bug #50 - Validate path BEFORE normalization
         if p.len() > 4096 {
             return Err(AppError::BadRequest("Path too long".into()));
         }
-        let p_norm = normalize_query_path(p);
+        let p_norm = normalize_query_path(p)?;
         if p_norm.len() > 4096 {
             return Err(AppError::BadRequest("Normalized path too long".into()));
         }
@@ -539,6 +583,7 @@ pub async fn get_tree(
         {
             base_depth = Some(row.get::<i64, _>("depth"));
         }
+        normalized_path = Some(p_norm);
     }
 
     // FIX Bugs #5,#6,#7 - Use QueryBuilder properly instead of string formatting
@@ -547,9 +592,8 @@ pub async fn get_tree(
     );
     qb.push_bind(id.to_string());
 
-    if let Some(ref p) = q.path {
+    if let Some(ref peq) = normalized_path {
         // Restrict to subtree: include the node itself and everything under it using a trailing separator
-        let peq = normalize_query_path(p); // exact node path as stored
         let mut pfx = peq.clone();
         if !pfx.ends_with('/') && !pfx.ends_with('\\') {
             if pfx.contains('\\') {
@@ -710,7 +754,7 @@ pub async fn get_list(
                 // fetch nodes for these paths to get sizes/counts
                 for root in roots {
                     let original_root = root.clone();
-                    let normalized_root = normalize_query_path(&original_root);
+                    let normalized_root = normalize_query_path(&original_root)?;
                     let (total_files, total_dirs) =
                         get_subtree_totals(id, &normalized_root, &state.db).await?;
 
@@ -771,7 +815,7 @@ pub async fn get_list(
 
     // With path: list children
     let path = q.path.as_ref().unwrap();
-    let pnorm = normalize_query_path(path);
+    let pnorm = normalize_query_path(path)?;
     let dir_rows = sqlx::query(
         r#"SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime
            FROM nodes WHERE scan_id=?1 AND is_dir=1 AND parent_path=?2"#,
@@ -871,7 +915,7 @@ pub async fn get_recent(
     let mut subtree_lo: Option<String> = None;
     let mut subtree_hi: Option<String> = None;
     if let Some(p) = q.path.as_ref() {
-        let peq = normalize_query_path(p);
+        let peq = normalize_query_path(p)?;
         let mut pfx = peq.clone();
         if !pfx.ends_with('/') && !pfx.ends_with('\\') {
             if pfx.contains('\\') {

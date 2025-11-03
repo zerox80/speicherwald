@@ -829,7 +829,7 @@ fn get_cache_size() -> usize {
 }
 
 lazy_static::lazy_static! {
-    static ref SIZE_CACHE: Mutex<LruCache<PathBuf, u64>> = {
+    static ref SIZE_CACHE: Mutex<LruCache<PathBuf, Option<u64>>> = {
         let size = get_cache_size();
         // Ensure size is non-zero
         let non_zero = std::num::NonZeroUsize::new(size)
@@ -843,8 +843,8 @@ fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
     // Zuerst im Cache nachschauen - handle lock poisoning
     match SIZE_CACHE.lock() {
         Ok(mut cache) => {
-            if let Some(&size) = cache.get(&path.to_path_buf()) {
-                return Some(size);
+            if let Some(entry) = cache.get(&path.to_path_buf()) {
+                return *entry;
             }
         }
         Err(e) => {
@@ -871,6 +871,9 @@ fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
                 if err == ERROR_NOT_SUPPORTED {
                     tracing::debug!("GetCompressedFileSizeW not supported for {:?}", path);
                 }
+                if let Ok(mut cache) = SIZE_CACHE.lock() {
+                    cache.put(path.to_path_buf(), None);
+                }
                 return None;
             }
         }
@@ -878,7 +881,7 @@ fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
 
         // In Cache speichern - ignore lock poisoning
         if let Ok(mut cache) = SIZE_CACHE.lock() {
-            cache.put(path.to_path_buf(), size);
+            cache.put(path.to_path_buf(), Some(size));
         } else {
             tracing::debug!("Failed to update SIZE_CACHE (lock poisoned)");
         }

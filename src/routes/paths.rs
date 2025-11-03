@@ -139,13 +139,15 @@ fn perform_move(req: MovePathRequest) -> AppResult<MoveOutcome> {
 
 fn move_file(source: &Path, destination: &Path, req: &MovePathRequest) -> AppResult<u64> {
     if destination.exists() {
+        let dest_meta = fs::metadata(destination)?;
+        if dest_meta.is_dir() {
+            return Err(AppError::Conflict(format!(
+                "destination refers to a directory: {}",
+                destination.display()
+            )));
+        }
         if req.overwrite {
-            let dest_meta = fs::metadata(destination)?;
-            if dest_meta.is_dir() {
-                fs::remove_dir_all(destination)?;
-            } else {
-                fs::remove_file(destination)?;
-            }
+            fs::remove_file(destination)?;
         } else {
             return Err(AppError::Conflict(format!(
                 "destination file already exists: {}",
@@ -184,13 +186,15 @@ fn move_directory(
     warnings: &mut Vec<String>,
 ) -> AppResult<u64> {
     if destination.exists() {
+        let dest_meta = fs::metadata(destination)?;
+        if !dest_meta.is_dir() {
+            return Err(AppError::Conflict(format!(
+                "destination refers to a file: {}",
+                destination.display()
+            )));
+        }
         if req.overwrite {
-            let dest_meta = fs::metadata(destination)?;
-            if dest_meta.is_dir() {
-                fs::remove_dir_all(destination)?;
-            } else {
-                fs::remove_file(destination)?;
-            }
+            fs::remove_dir_all(destination)?;
         } else {
             return Err(AppError::Conflict(format!(
                 "destination directory already exists: {}",
@@ -230,13 +234,25 @@ fn copy_directory(
     remove_source: bool,
     warnings: &mut Vec<String>,
 ) -> AppResult<u64> {
+    fn rollback_partial(files: &[PathBuf], dirs: &[PathBuf]) {
+        for file in files.iter().rev() {
+            let _ = fs::remove_file(file);
+        }
+        for dir in dirs.iter().rev() {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
     let mut bytes_copied = 0u64;
     let dest_existed = destination.exists();
+    let mut created_files: Vec<PathBuf> = Vec::new();
+    let mut created_dirs: Vec<PathBuf> = Vec::new();
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
     if !dest_existed {
         fs::create_dir_all(destination)?;
+        created_dirs.push(destination.to_path_buf());
     }
 
     for entry in WalkDir::new(source).into_iter() {
@@ -263,7 +279,12 @@ fn copy_directory(
                     e.kind(),
                     target.display()
                 ));
+                if remove_source {
+                    rollback_partial(&created_files, &created_dirs);
+                }
+                continue;
             }
+            created_dirs.push(target.clone());
             continue;
         }
 
@@ -273,6 +294,7 @@ fn copy_directory(
         }
 
         if let Some(parent) = target.parent() {
+            let parent_missing = !parent.exists();
             if let Err(e) = fs::create_dir_all(parent) {
                 warnings.push(format!(
                     "Zielordner konnte nicht erstellt werden ({}): {}",
@@ -281,15 +303,29 @@ fn copy_directory(
                 ));
                 continue;
             }
+            if parent_missing {
+                created_dirs.push(parent.to_path_buf());
+            }
         }
 
         if target.exists() {
-            if overwrite {
-                if target.is_file() {
-                    fs::remove_file(&target)?;
-                } else {
+            if target.is_dir() {
+                if overwrite {
                     fs::remove_dir_all(&target)?;
+                } else if remove_source {
+                    return Err(AppError::Conflict(format!(
+                        "Konflikt: Ziel ist bereits ein Ordner und Ueberschreiben ist deaktiviert ({})",
+                        target.display()
+                    )));
+                } else {
+                    warnings.push(format!(
+                        "Ordner bereits vorhanden, uebersprungen: {}",
+                        target.display()
+                    ));
+                    continue;
                 }
+            } else if overwrite {
+                fs::remove_file(&target)?;
             } else if remove_source {
                 return Err(AppError::Conflict(format!(
                     "Konflikt: Ziel existiert bereits und Ueberschreiben ist deaktiviert ({})",
@@ -302,9 +338,13 @@ fn copy_directory(
         }
 
         match fs::copy(entry.path(), &target) {
-            Ok(bytes) => bytes_copied += bytes,
+            Ok(bytes) => {
+                bytes_copied += bytes;
+                created_files.push(target.clone());
+            }
             Err(e) => {
                 if remove_source {
+                    rollback_partial(&created_files, &created_dirs);
                     return Err(AppError::IoError(format!(
                         "Datei konnte nicht kopiert werden ({}): {}",
                         e.kind(),

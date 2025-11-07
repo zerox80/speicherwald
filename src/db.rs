@@ -12,11 +12,19 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     // Foreign keys are critical - fail if this doesn't work
     sqlx::query("PRAGMA foreign_keys=ON;").execute(pool).await?;
 
-    // Additional tuning (best-effort)
-    sqlx::query("PRAGMA busy_timeout=10000;").execute(pool).await.ok();
-    sqlx::query("PRAGMA cache_size=-65536;").execute(pool).await.ok();
-    sqlx::query("PRAGMA temp_store=MEMORY;").execute(pool).await.ok();
-    sqlx::query("PRAGMA mmap_size=268435456;").execute(pool).await.ok();
+    // Additional tuning (best-effort) - FIX Bug #10: Log failures
+    if let Err(e) = sqlx::query("PRAGMA busy_timeout=10000;").execute(pool).await {
+        tracing::warn!("Failed to set busy_timeout: {}", e);
+    }
+    if let Err(e) = sqlx::query("PRAGMA cache_size=-65536;").execute(pool).await {
+        tracing::warn!("Failed to set cache_size: {}", e);
+    }
+    if let Err(e) = sqlx::query("PRAGMA temp_store=MEMORY;").execute(pool).await {
+        tracing::warn!("Failed to set temp_store: {}", e);
+    }
+    if let Err(e) = sqlx::query("PRAGMA mmap_size=268435456;").execute(pool).await {
+        tracing::warn!("Failed to set mmap_size: {}", e);
+    }
 
     // scans table
     sqlx::query(
@@ -125,10 +133,23 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
         ("idx_files_scan_path", "CREATE INDEX IF NOT EXISTS idx_files_scan_path ON files(scan_id, path)"),
     ];
 
+    // FIX Bug #39: Better handling of duplicate index creation
     for (name, query) in indexes {
         if let Err(e) = sqlx::query(query).execute(pool).await {
-            tracing::warn!("Failed to create index {}: {}", name, e);
-            // Continue with other indexes even if one fails
+            // Check if it's a "already exists" error
+            match &e {
+                sqlx::Error::Database(db_err) => {
+                    let msg = db_err.message().to_lowercase();
+                    if msg.contains("already exists") || msg.contains("duplicate") {
+                        tracing::debug!("Index {} already exists, skipping", name);
+                    } else {
+                        tracing::warn!("Failed to create index {}: {}", name, e);
+                    }
+                }
+                _ => {
+                    tracing::warn!("Failed to create index {}: {}", name, e);
+                }
+            }
         }
     }
 

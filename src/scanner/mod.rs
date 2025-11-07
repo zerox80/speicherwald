@@ -103,8 +103,14 @@ pub async fn run_scan(
     }
     let sem = Arc::new(Semaphore::new(concurrency));
     // Channel buffer size: ensure it's large enough but bounded
-    let channel_size =
-        concurrency.checked_mul(8).and_then(|v| v.checked_add(128)).unwrap_or(2048).clamp(256, 2048);
+    // FIX Bug #7: Log warning when overflow occurs
+    let channel_size = match concurrency.checked_mul(8).and_then(|v| v.checked_add(128)) {
+        Some(size) => size.clamp(256, 2048),
+        None => {
+            tracing::warn!("Channel size calculation overflow for concurrency={}, using default 2048", concurrency);
+            2048
+        }
+    };
     let (tx_res, mut rx_res) =
         mpsc::channel::<(Vec<NodeRecord>, Vec<FileRecord>, ScanResultSummary)>(channel_size);
 
@@ -246,11 +252,16 @@ pub async fn run_scan(
                             }
                             root_files += 1;
                             let logical_sz = md.len();
-                            // FIX Bug #20,#21 - Log overflow warnings
+                            // FIX Bug #40: Return error on overflow instead of setting to u64::MAX
                             let (new_logical, overflow1) = root_files_logical.overflowing_add(logical_sz);
                             if overflow1 && options_cl.measure_logical {
-                                tracing::warn!("Logical size overflow at path: {:?}", p);
-                                root_files_logical = u64::MAX;
+                                tracing::error!("Logical size overflow at path: {:?}", p);
+                                let _ = tx_clone.send(ScanEvent::Failed {
+                                    message: format!("Size overflow at: {:?}", p),
+                                });
+                                let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
+                                let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
+                                continue; // Skip this file but continue scanning
                             } else if options_cl.measure_logical {
                                 root_files_logical = new_logical;
                             }
@@ -261,8 +272,13 @@ pub async fn run_scan(
                             };
                             let (new_alloc, overflow2) = root_files_alloc.overflowing_add(alloc_sz);
                             if overflow2 {
-                                tracing::warn!("Allocated size overflow at path: {:?}", p);
-                                root_files_alloc = u64::MAX;
+                                tracing::error!("Allocated size overflow at path: {:?}", p);
+                                let _ = tx_clone.send(ScanEvent::Failed {
+                                    message: format!("Size overflow at: {:?}", p),
+                                });
+                                let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
+                                let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
+                                continue; // Skip this file but continue scanning
                             } else {
                                 root_files_alloc = new_alloc;
                             }
@@ -326,29 +342,35 @@ pub async fn run_scan(
                     let opt = options_cl.clone();
                     let gs2 = gs.clone();
                     let handle = std::thread::spawn(move || {
-                        let mut ssum = ScanResultSummary::default();
-                        let mut last_sent_summary = ScanResultSummary::default();
-                        let mut snodes: Vec<NodeRecord> = Vec::with_capacity(flush_thr);
-                        let mut sfiles: Vec<FileRecord> = Vec::with_capacity(flush_thr);
-                        let _ = scan_dir(
-                            id,
-                            &sub,
-                            1,
-                            &opt,
-                            &gs2,
-                            &tx_sse,
-                            &cancel_th,
-                            &mut ssum,
-                            &mut snodes,
-                            &mut sfiles,
-                            &tx_res_sub,
-                            flush_thr,
-                        );
-                        // send remaining
-                        let delta = diff_summary(&ssum, &last_sent_summary);
-                        last_sent_summary = ssum.clone();
-                        let _ = tx_res_sub.blocking_send((snodes, sfiles, delta));
-                        ssum
+                        // FIX Bug #11: Ensure proper cleanup even on panic
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let mut ssum = ScanResultSummary::default();
+                            let mut last_sent_summary = ScanResultSummary::default();
+                            let mut snodes: Vec<NodeRecord> = Vec::with_capacity(flush_thr);
+                            let mut sfiles: Vec<FileRecord> = Vec::with_capacity(flush_thr);
+                            let _ = scan_dir(
+                                id,
+                                &sub,
+                                1,
+                                &opt,
+                                &gs2,
+                                &tx_sse,
+                                &cancel_th,
+                                &mut ssum,
+                                &mut snodes,
+                                &mut sfiles,
+                                &tx_res_sub,
+                                flush_thr,
+                            );
+                            // send remaining
+                            let delta = diff_summary(&ssum, &last_sent_summary);
+                            let _ = tx_res_sub.blocking_send((snodes, sfiles, delta));
+                            ssum
+                        }));
+                        result.unwrap_or_else(|_| {
+                            tracing::error!("Thread panicked during scan");
+                            ScanResultSummary::default()
+                        })
                     });
                     running.push(handle);
                 }
@@ -535,7 +557,8 @@ fn scan_dir(
     let mut logical: u64 = 0;
     let mut allocated: u64 = 0;
 
-    let mut sent = 0u32;
+    // FIX Bug #12: Use u64 instead of u32 to prevent overflow on large directories
+    let mut sent = 0u64;
     let mut last_emit = Instant::now();
     let dir_str = dir.to_string_lossy().to_string();
 
@@ -569,10 +592,11 @@ fn scan_dir(
                     if !options.include_hidden && is_hidden_or_system(&md) {
                         continue;
                     }
-                    // FIX Bug #67 - Check max_depth: depth is 0-indexed from root
-                    // If we're at depth N and max_depth is N, we've reached the limit
+                    // FIX Bug #9: Check max_depth: depth is 0-indexed from root
+                    // If we're at depth N and max_depth is N, we can still recurse one level
+                    // Only block when depth > max_depth (not >=)
                     if let Some(max_d) = options.max_depth {
-                        if depth >= max_d {
+                        if depth > max_d {
                             continue; // Don't recurse deeper
                         }
                     }
@@ -605,9 +629,15 @@ fn scan_dir(
                     } else {
                         logical_sz
                     };
-                    // FIX Bug #22 - Check for overflow in scan_dir
+                    // FIX Bug #22 - Check for overflow in scan_dir (consistent handling)
                     if options.measure_logical {
-                        logical = logical.saturating_add(logical_sz);
+                        let (new_logical, overflow_logical) = logical.overflowing_add(logical_sz);
+                        if overflow_logical {
+                            tracing::warn!("Logical size overflow at path: {:?}", path);
+                            logical = u64::MAX;
+                        } else {
+                            logical = new_logical;
+                        }
                     }
                     let (new_alloc, overflow_alloc) = allocated.overflowing_add(alloc_sz);
                     if overflow_alloc {
@@ -630,8 +660,8 @@ fn scan_dir(
 
                 sent = sent.saturating_add(1);
                 // Reduzierte Progress-Updates für bessere Performance
-                // Use modulo with non-zero check to prevent division by zero
-                if sent > 0 && sent % 512 == 0 {
+                // FIX Bug #13: Remove redundant sent > 0 check (modulo handles zero)
+                if sent % 512 == 0 {
                     let _ = tx.send(ScanEvent::Progress {
                         current_path: path.to_string_lossy().to_string(),
                         dirs_scanned: summary.total_dirs + local_dirs,
@@ -683,14 +713,14 @@ fn scan_dir(
     summary.total_allocated_size = summary.total_allocated_size.saturating_add(allocated);
 
     // collect node record for this directory
-    // FIX Bug #23 - dir_count should be subdirectories count
+    // FIX Bug #18 & #23: Return error if local_dirs is invalid instead of continuing
     // local_dirs includes this dir (initialized to 1) plus all recursive subdirs
     // Subtract 1 to exclude self from the count
     let dir_count_value = if local_dirs > 0 {
         local_dirs - 1
     } else {
-        tracing::warn!("local_dirs is 0 at {:?}, should be at least 1", dir);
-        0
+        tracing::error!("local_dirs is 0 at {:?}, this indicates a logic error", dir);
+        anyhow::bail!("Invalid directory count detected");
     };
     nodes.push(NodeRecord {
         path: dir_str,
@@ -715,13 +745,20 @@ fn build_globset(patterns: &[String]) -> anyhow::Result<GlobSet> {
         if trimmed.is_empty() {
             continue;
         }
-        // Validate pattern length to prevent DoS
+        // FIX Bug #29: Validate pattern length and complexity to prevent DoS
         if trimmed.len() > 1024 {
             tracing::warn!("Glob pattern too long, skipping: {} chars", trimmed.len());
             continue;
         }
-        // Normalisiere Backslashes zu Slashes, damit Muster plattformunabhängig mit
-        // der Pfadnormalisierung in `matches_excludes` (\\ -> /) übereinstimmen.
+        // Check for excessive wildcards that could cause exponential backtracking
+        let wildcard_count = trimmed.chars().filter(|&c| c == '*' || c == '?').count();
+        if wildcard_count > 20 {
+            tracing::warn!("Glob pattern has too many wildcards ({}), skipping: {}", wildcard_count, trimmed);
+            continue;
+        }
+        // FIX Bug #24: Normalize path separators consistently
+        // We use forward slashes internally for cross-platform compatibility
+        // Windows APIs handle forward slashes correctly in most cases
         let norm = trimmed.replace('\\', "/");
         // Catch glob compilation errors
         let g = Glob::new(&norm).map_err(|e| anyhow::anyhow!("Invalid glob pattern '{}': {}", norm, e))?;
@@ -734,8 +771,14 @@ fn matches_excludes(path: &Path, set: &GlobSet) -> bool {
     if set.is_empty() {
         return false;
     }
-    let s = path.to_string_lossy().replace('\\', "/");
-    set.is_match(&s)
+    // FIX Bug #25: Check for replacement characters from invalid UTF-8
+    let s = path.to_string_lossy();
+    if s.contains('\u{FFFD}') {
+        tracing::warn!("Path contains invalid UTF-8, skipping: {:?}", path);
+        return true; // Exclude paths with invalid UTF-8
+    }
+    let normalized = s.replace('\\', "/");
+    set.is_match(&normalized)
 }
 
 #[cfg(windows)]
@@ -761,8 +804,13 @@ fn is_network_path(path: &Path) -> bool {
     // Detect mapped network drives (e.g., Z:\)
     let s = path.as_os_str().to_string_lossy();
     if s.len() >= 2 && s.chars().nth(1) == Some(':') {
-        let drive = s.chars().next().unwrap_or('C');
-        let root = format!("{}:\\", drive);
+        // FIX Bug #4: Validate drive letter properly
+        let drive_char = s.chars().next().unwrap_or('C');
+        if !drive_char.is_ascii_alphabetic() {
+            tracing::warn!("Invalid drive letter in path: {}", s);
+            return false;
+        }
+        let root = format!("{}:\\", drive_char);
         use std::os::windows::ffi::OsStrExt;
         use windows::core::PCWSTR;
         use windows::Win32::Storage::FileSystem::GetDriveTypeW;
@@ -999,7 +1047,7 @@ fn diff_summary(current: &ScanResultSummary, previous: &ScanResultSummary) -> Sc
         total_logical_size: current.total_logical_size.saturating_sub(previous.total_logical_size),
         total_allocated_size: current.total_allocated_size.saturating_sub(previous.total_allocated_size),
         warnings: current.warnings.saturating_sub(previous.warnings),
-        latest_mtime: current.latest_mtime.clone(),
-        latest_atime: current.latest_atime.clone(),
+        latest_mtime: current.latest_mtime,
+        latest_atime: current.latest_atime,
     }
 }

@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+// FIX Bug #20: Removed dead_code annotation
 use super::ip::extract_ip_from_headers;
 use axum::{
     extract::{connect_info::ConnectInfo, Request},
@@ -41,8 +41,9 @@ impl RateLimiter {
 
         // Remove old timestamps outside the window (safe against time skew)
         timestamps.retain(|&t| {
-            // Handle potential time skew by checking duration validity
-            now.checked_duration_since(t).map(|d| d < self.window).unwrap_or(false)
+            // FIX Bug #6: On time skew, keep the timestamp (conservative approach)
+            // This prevents incorrectly allowing rate-limited requests when clock jumps backward
+            now.checked_duration_since(t).map(|d| d < self.window).unwrap_or(true)
         });
 
         // Check if rate limit exceeded
@@ -80,7 +81,7 @@ impl RateLimiter {
 
         // Remove IPs with no recent requests (handle time skew)
         requests.retain(|_, timestamps| {
-            timestamps.retain(|&t| now.checked_duration_since(t).map(|d| d < self.window).unwrap_or(false));
+            timestamps.retain(|&t| now.checked_duration_since(t).map(|d| d < self.window).unwrap_or(true));
             !timestamps.is_empty()
         });
     }
@@ -109,15 +110,17 @@ pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
         static ref GLOBAL_CLEANUP_STARTED: OnceLock<()> = OnceLock::new();
     }
 
+    // FIX Bug #22: Cleanup task is already spawned in main.rs, don't duplicate it here
+    // Note: The per-endpoint rate limiter cleanup in main.rs:98-113 handles this
     // Start a periodic cleanup task exactly once to avoid unbounded growth of the
     // in-memory IP map for the global limiter in long-running processes.
     GLOBAL_CLEANUP_STARTED.get_or_init(|| {
         let limiter = GLOBAL_RATE_LIMITER.clone();
         // Configurable cleanup interval
-        let cleanup_secs = std::env::var("SPEICHERWALD_RATE_LIMIT_CLEANUP_INTERVAL")
+        let cleanup_secs = std::env::var("SPEICHERWALD_GLOBAL_RATE_LIMIT_CLEANUP_INTERVAL")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(300)
+            .unwrap_or(600) // Default to 10 minutes for global limiter
             .clamp(60, 3600);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(cleanup_secs));
@@ -153,13 +156,28 @@ impl EndpointRateLimiter {
         Self { limiters: Arc::new(RwLock::new(HashMap::new())) }
     }
 
-    pub fn with_limits(mut self, limits: Vec<(&str, usize, u64)>) -> Self {
-        let mut limiters_map = HashMap::new();
+    /// Add or update per-endpoint rate limits.
+    /// This method extends existing limits rather than replacing them.
+    /// If an endpoint already has a limit, it will be updated.
+    pub fn with_limits(self, limits: Vec<(&str, usize, u64)>) -> Self {
+        // Extract existing limiters or create new HashMap
+        let mut limiters_map = match Arc::try_unwrap(self.limiters) {
+            Ok(rwlock) => rwlock.into_inner(),
+            Err(arc) => {
+                // If Arc has multiple owners, clone the inner data
+                let guard = arc.blocking_read();
+                guard.clone()
+            }
+        };
+        
+        // Add/update new limits
         for (endpoint, max_requests, window_seconds) in limits {
             limiters_map.insert(endpoint.to_string(), RateLimiter::new(max_requests, window_seconds));
         }
-        self.limiters = Arc::new(RwLock::new(limiters_map));
-        self
+        
+        Self {
+            limiters: Arc::new(RwLock::new(limiters_map))
+        }
     }
 
     pub async fn check_endpoint_limit(

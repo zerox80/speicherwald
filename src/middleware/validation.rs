@@ -144,21 +144,34 @@ pub fn validate_uuid(id: &str) -> Result<Uuid, (StatusCode, Json<serde_json::Val
 
 /// Validate and sanitize file paths
 pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
-    // Check for null bytes
-    if path.contains('\0') {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": {
                     "code": "INVALID_PATH",
-                    "message": "Path contains null characters",
-                },
-                "status": 400,
+                    "message": "Path must not be empty"
+                }
+            })),
+        ));
+    }
+    // FIX Bug #17: Add consistent null byte checking
+    if trimmed.contains('\0') {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "INVALID_PATH",
+                    "message": "Path contains null byte"
+                }
             })),
         ));
     }
 
     // Check for path traversal
+    // FIX Bug #15: Note that this checks for .. in paths, but symlink-based
+    // traversal requires runtime filesystem checks which should be done at point of use
     if contains_path_traversal(path) {
         return Err((
             StatusCode::BAD_REQUEST,

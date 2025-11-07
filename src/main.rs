@@ -153,6 +153,20 @@ async fn main() -> anyhow::Result<()> {
     // Clone config Arc for stateful middleware
     let cfg_arc = state.config.clone();
 
+    // FIX Bug #32: Configure per-endpoint rate limits
+    // Note: Only static routes work with string-based endpoint matching.
+    // Dynamic routes like /scans/{id}/events cannot be matched this way.
+    // TODO: Implement pattern-based route matching for per-endpoint rate limiting
+    let state_with_limits = {
+        let mut s = state.clone();
+        s.rate_limiter = s.rate_limiter.with_limits(vec![
+            ("/scans", 30, 60),           // 30 requests per minute for scan creation
+            ("/paths/move", 10, 60),      // 10 move operations per minute
+            // Removed: ("/scans/{id}/events", ...) - doesn't work with parametrized routes
+        ]);
+        s
+    };
+
     let app = Router::new()
         .route("/healthz", get(routes::health::healthz))
         .route("/readyz", get(routes::health::readyz))
@@ -172,7 +186,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/drives", get(routes::drives::list_drives))
         .route("/paths/move", post(routes::paths::move_path))
         .fallback_service(static_ui_service)
-        .with_state(state)
+        .with_state(state_with_limits)
         // Globales Body-Limit – schützt vor übergroßen Requests (configurable via env)
         .layer(DefaultBodyLimit::max(
             std::env::var("SPEICHERWALD_MAX_BODY_SIZE")

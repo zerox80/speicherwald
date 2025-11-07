@@ -22,6 +22,7 @@ use crate::{
         ip::extract_ip_from_headers,
         validation::{sanitize_for_logging, validate_file_path},
     },
+    routes::paths_helpers::get_volume_root,
     state::AppState,
     types::{MovePathRequest, MovePathResponse},
 };
@@ -82,9 +83,14 @@ pub async fn move_path(
     job_req.source = source_valid.clone();
     job_req.destination = dest_valid.clone();
 
-    let outcome = spawn_blocking(move || perform_move(job_req))
-        .await
-        .map_err(|e| AppError::Internal(anyhow!("move task join error: {}", e)))??;
+    // FIX Bug #36: Add timeout to blocking operations (30 minutes for large file ops)
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1800),
+        spawn_blocking(move || perform_move(job_req))
+    )
+    .await
+    .map_err(|_| AppError::ServiceUnavailable("File operation timed out after 30 minutes".into()))?
+    .map_err(|e| AppError::Internal(anyhow!("move task join error: {}", e)))??;
 
     let duration_ms = started_instant.elapsed().as_millis();
     let response = MovePathResponse {
@@ -126,6 +132,49 @@ fn perform_move(req: MovePathRequest) -> AppResult<MoveOutcome> {
     let mut warnings = Vec::new();
     let bytes_to_transfer =
         if metadata.is_dir() { compute_directory_size(&source_path, &mut warnings)? } else { metadata.len() };
+
+    // FIX Bug #34: Check available disk space before proceeding
+    if !req.remove_source {
+        // For copy operations, check if destination has enough space
+        if let Some(parent) = dest_path.parent() {
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStrExt;
+                use windows::core::PCWSTR;
+                use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+                
+                let root_path = get_volume_root(parent);
+                let w: Vec<u16> = std::ffi::OsStr::new(&root_path)
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                
+                unsafe {
+                    let mut free_bytes_available = 0u64;
+                    if GetDiskFreeSpaceExW(
+                        PCWSTR(w.as_ptr()),
+                        Some(&mut free_bytes_available),
+                        None,
+                        None,
+                    ).is_ok() {
+                        // Add 10% buffer for safety
+                        let required = bytes_to_transfer + (bytes_to_transfer / 10);
+                        if free_bytes_available < required {
+                            return Err(AppError::BadRequest(format!(
+                                "Insufficient disk space: {} available, {} required",
+                                free_bytes_available, required
+                            )));
+                        }
+                    }
+                }
+            }
+            #[cfg(unix)]
+            {
+                // Unix disk space check could be added here using statvfs
+                tracing::debug!("Disk space check not implemented on Unix");
+            }
+        }
+    }
 
     let bytes_moved = if metadata.is_file() {
         move_file(&source_path, &dest_path, &req)?
@@ -237,12 +286,17 @@ fn copy_directory(
     remove_source: bool,
     warnings: &mut Vec<String>,
 ) -> AppResult<u64> {
+    // FIX Bug #35: Log errors during rollback instead of silently ignoring
     fn rollback_partial(files: &[PathBuf], dirs: &[PathBuf]) {
         for file in files.iter().rev() {
-            let _ = fs::remove_file(file);
+            if let Err(e) = fs::remove_file(file) {
+                tracing::error!("Rollback: failed to remove file {}: {}", file.display(), e);
+            }
         }
         for dir in dirs.iter().rev() {
-            let _ = fs::remove_dir_all(dir);
+            if let Err(e) = fs::remove_dir_all(dir) {
+                tracing::error!("Rollback: failed to remove directory {}: {}", dir.display(), e);
+            }
         }
     }
 
@@ -291,9 +345,23 @@ fn copy_directory(
             continue;
         }
 
-        if entry.file_type().is_symlink() {
+        // FIX Bug #33: Better handling of symlinks and junction points on Windows
+        let file_type = entry.file_type();
+        if file_type.is_symlink() {
             warnings.push(format!("Symlink uebersprungen (manuell pruefen): {}", entry.path().display()));
             continue;
+        }
+        // On Windows, also check for reparse points (junctions)
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if let Ok(metadata) = entry.metadata() {
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+                if (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    warnings.push(format!("Reparse point/junction uebersprungen: {}", entry.path().display()));
+                    continue;
+                }
+            }
         }
 
         if let Some(parent) = target.parent() {
@@ -364,9 +432,17 @@ fn copy_directory(
         }
     }
 
+    // FIX Bug #23: Log error instead of silently ignoring
     if bytes_copied == 0 && !dest_existed {
-        if destination.read_dir().map(|mut it| it.next().is_none()).unwrap_or(false) {
-            let _ = fs::remove_dir_all(destination);
+        match destination.read_dir() {
+            Ok(mut it) => {
+                if it.next().is_none() {
+                    let _ = fs::remove_dir_all(destination);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check if destination is empty: {}", e);
+            }
         }
     }
 

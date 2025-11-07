@@ -1,7 +1,7 @@
 use dioxus::events::FormData;
 use dioxus::prelude::*;
 
-use dioxus_router::prelude::*;
+use dioxus_router::{use_navigator, Link, Routable, Router};
 use js_sys::Date;
 use web_sys::console;
 use std::rc::Rc;
@@ -200,7 +200,13 @@ fn Home() -> Element {
                 div { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px;margin-top:8px;",
                     { drives.read().iter().map(|d| {
                         let path = d.path.clone();
-                        let used = d.total_bytes.saturating_sub(d.free_bytes);
+                        // FIX Bug #5: Handle invalid disk stats where free > total
+                        let used = if d.free_bytes > d.total_bytes {
+                            console::warn_1(&format!("Invalid disk stats for {}: free_bytes ({}) > total_bytes ({})", path, d.free_bytes, d.total_bytes).into());
+                            0
+                        } else {
+                            d.total_bytes - d.free_bytes
+                        };
                         let percent = if d.total_bytes > 0 { (used as f64) / (d.total_bytes as f64) * 100.0 } else { 0.0 };
                         let bar_width = format!("width:{:.1}%;", percent);
                         rsx!{ div { style: "border:1px solid #222533;background:#0f1117;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px;",
@@ -730,18 +736,27 @@ fn Scan(id: String) -> Element {
         let loading_list_h = loading_list.clone();
         let nav_hist_h = nav_history.clone();
         let live_h = live_update.clone();
-        let last_h = last_refresh.clone();
+        let mut last_h = last_refresh.clone();
 
         use_effect(move || {
-            let log_state_in = log_state.clone();
+            let mut log_state_in = log_state.clone();
             let log_state_err = log_state.clone();
             let es_holder = es_ref_state.clone();
-            let id_for_cb = id_for_cb.clone(); // Clone before the callback captures it
+            let id_for_cb = id_for_cb.clone();
 
             let result = api::sse_attach(&id_for_sse, move |ev| {
-                let id_for_cb = id_for_cb.clone(); // Clone inside callback for multiple uses
+                let id_for_cb = id_for_cb.clone();
                 
                 let mut newlog = log_state_in.read().clone();
+                // FIX Bug #3: Limit log size to prevent unbounded growth (max 50KB)
+                const MAX_LOG_SIZE: usize = 50_000;
+                if newlog.len() > MAX_LOG_SIZE {
+                    // Keep only the last 80% when limit is reached
+                    let keep_size = (MAX_LOG_SIZE * 4) / 5;
+                    newlog = newlog.chars().rev().take(keep_size).collect::<String>().chars().rev().collect();
+                    newlog.insert_str(0, "[...log truncated...]\n");
+                }
+                
                 match &ev {
                     types::ScanEvent::Started { root_paths } => newlog.push_str(&format!("Started: {}\n", root_paths.join(", "))),
                     types::ScanEvent::Progress { current_path, dirs_scanned, files_scanned, allocated_size, .. } => newlog.push_str(&format!("Progress: {} | dirs={} files={} alloc={}\n", current_path, dirs_scanned, files_scanned, fmt_bytes(*allocated_size as i64))),
@@ -750,7 +765,7 @@ fn Scan(id: String) -> Element {
                     types::ScanEvent::Cancelled => newlog.push_str("Cancelled\n"),
                     types::ScanEvent::Failed { message } => newlog.push_str(&format!("Failed: {}\n", message)),
                 }
-                let mut log_state_in = log_state_in.clone();
+                // FIX Bug #2: Remove redundant clone
                 log_state_in.set(newlog);
 
                 if let types::ScanEvent::Done { .. } = ev {
@@ -816,7 +831,9 @@ fn Scan(id: String) -> Element {
                 if *live_h.read() {
                     let now = Date::now();
                     let mut should = false;
-                    if let Ok(mut last) = last_h.try_write_unchecked() {
+                    // FIX Bug #21: Use safe write instead of unsafe try_write_unchecked
+                    {
+                        let mut last = last_h.write();
                         if now - *last > 5000.0 {
                             *last = now;
                             should = true;
@@ -1157,11 +1174,13 @@ fn Scan(id: String) -> Element {
                 }
                 button { style: btn_style(), onclick: top_less, "Weniger" }
                 button { style: btn_style(), onclick: top_more, "Mehr" }
-                button { style: btn_style(), onclick: {
+                button { class: "btn", onclick: {
                         let top_items = top_items.clone();
                         let top_show = top_show.clone();
                         let id_csv = id.clone();
                         move |_| {
+                            // FIX Bug #37: Note that this builds CSV in memory
+                            // For very large exports, consider using server-side streaming
                             let mut csv = String::from("type,path,allocated,logical,depth,file_count,dir_count\n");
                             let show_count = *top_show.read();
                             for it in top_items.read().iter().take(show_count) {
@@ -1189,7 +1208,15 @@ fn Scan(id: String) -> Element {
                         types::TopItem::File { path, allocated_size, .. } => (path.clone(), *allocated_size),
                     };
                     let mut blocks: usize = 1;
-                    if max_alloc_bar > 0 { blocks = (((alloc as f64) / (max_alloc_bar as f64) * 40.0).round() as usize).max(1); }
+                    // FIX Bug #16: Add bounds check for float to usize cast
+                    if max_alloc_bar > 0 { 
+                        let calc = ((alloc as f64) / (max_alloc_bar as f64) * 40.0).round();
+                        blocks = if calc >= 0.0 && calc <= 1000.0 {
+                            (calc as usize).max(1).min(1000)
+                        } else {
+                            1
+                        };
+                    }
                     let bar = "█".repeat(blocks);
                     rsx!{ div { style: "display:flex;gap:10px;align-items:center;font-family:monospace;",
                         span { style: "min-width:80px;color:#a0aec0;", "{fmt_bytes(alloc)}" }

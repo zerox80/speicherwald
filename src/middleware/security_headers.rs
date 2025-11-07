@@ -66,8 +66,13 @@ pub async fn security_headers_middleware(
     }
 
     // Defensive caching policy for API responses (JSON) and SSE streams only
-    let ct_val: Option<String> =
-        headers.get(CONTENT_TYPE).and_then(|ct| ct.to_str().ok()).map(|s| s.to_string());
+    // FIX Bug #38: Better handling of invalid UTF-8 in Content-Type
+    let ct_val: Option<String> = headers.get(CONTENT_TYPE).and_then(|ct| {
+        ct.to_str().map_err(|e| {
+            tracing::warn!("Invalid UTF-8 in Content-Type header: {}", e);
+            e
+        }).ok().map(|s| s.to_string())
+    });
     if let Some(s) = ct_val.as_deref() {
         let is_json = s.starts_with("application/json");
         let is_sse = s.starts_with("text/event-stream");

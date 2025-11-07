@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+// FIX Bug #19: Removed dead_code annotation - address dead code properly
 
 use axum::{
     http::StatusCode,

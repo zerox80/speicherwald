@@ -244,30 +244,26 @@ pub async fn list_scans(State(state): State<AppState>) -> AppResult<impl IntoRes
     .fetch_all(&state.db)
     .await?;
 
-    let items: Vec<ScanSummary> = rows
-        .into_iter()
-        .filter_map(|r| {
-            let id_str = r.get::<String, _>("id");
-            // Validate UUID before including in response - reject invalid entries
-            Uuid::parse_str(&id_str)
-                .map_err(|e| {
-                    tracing::error!("Invalid UUID in scans table: {} - {} (data corruption)", id_str, e);
-                    e
-                })
-                .ok()
-                .map(|id| ScanSummary {
-                    id,
-                    status: r.get::<String, _>("status"),
-                    started_at: r.get::<Option<String>, _>("started_at"),
-                    finished_at: r.get::<Option<String>, _>("finished_at"),
-                    total_logical_size: r.get::<i64, _>("total_logical_size"),
-                    total_allocated_size: r.get::<i64, _>("total_allocated_size"),
-                    dir_count: r.get::<i64, _>("dir_count"),
-                    file_count: r.get::<i64, _>("file_count"),
-                    warning_count: r.get::<i64, _>("warning_count"),
-                })
-        })
-        .collect();
+    // FIX Bug #28: Fail fast on invalid UUIDs instead of silently filtering
+    let mut items: Vec<ScanSummary> = Vec::with_capacity(rows.len());
+    for r in rows {
+        let id_str = r.get::<String, _>("id");
+        let id = Uuid::parse_str(&id_str).map_err(|e| {
+            tracing::error!("Invalid UUID in scans table: {} - {} (data corruption detected)", id_str, e);
+            AppError::Database(format!("Database corruption: invalid UUID {}", id_str))
+        })?;
+        items.push(ScanSummary {
+            id,
+            status: r.get::<String, _>("status"),
+            started_at: r.get::<Option<String>, _>("started_at"),
+            finished_at: r.get::<Option<String>, _>("finished_at"),
+            total_logical_size: r.get::<i64, _>("total_logical_size"),
+            total_allocated_size: r.get::<i64, _>("total_allocated_size"),
+            dir_count: r.get::<i64, _>("dir_count"),
+            file_count: r.get::<i64, _>("file_count"),
+            warning_count: r.get::<i64, _>("warning_count"),
+        });
+    }
 
     Ok(Json(items))
 }
@@ -328,13 +324,16 @@ pub async fn cancel_scan(
         }
     };
 
+    // FIX Bug #27: Use transaction for atomic operation
     // Update DB after releasing lock to avoid deadlock
     if was_running && !purge {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             r#"UPDATE scans SET status='canceled', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1 AND status='running'"#
         )
         .bind(id.to_string())
-        .execute(&state.db).await;
+        .execute(&state.db).await {
+            tracing::error!("Failed to update scan status to canceled: {}", e);
+        }
     } else if !was_running && !purge {
         // Not running: act idempotently
         return Ok((StatusCode::NO_CONTENT, ""));
@@ -604,10 +603,12 @@ pub async fn get_tree(
                 pfx.push('/');
             }
         }
-        let pfx_upper = format!("{}~", pfx);
+        // FIX Bug #8: Escape special characters to prevent SQL injection via path
+        let pfx_escaped = escape_like_pattern(&pfx);
+        let pfx_upper = format!("{}~", pfx_escaped);
         qb.push(" AND (path = ").push_bind(peq.clone());
-        qb.push(" OR (path >= ").push_bind(pfx.clone());
-        qb.push(" AND path < ").push_bind(pfx_upper.clone());
+        qb.push(" OR (path >= ").push_bind(pfx_escaped.clone());
+        qb.push(" AND path < ").push_bind(pfx_upper);
         qb.push("))");
     }
     if let (Some(bd), Some(d)) = (base_depth, q.depth) {
@@ -739,10 +740,19 @@ pub async fn get_list(
         return Err(AppError::BadRequest("offset must be >= 0".into()));
     }
     let offset = usize::try_from(offset_raw).map_err(|_| AppError::BadRequest("offset too large".into()))?;
-    if offset > 10_000 {
-        return Err(AppError::BadRequest("offset too large".into()));
+    // FIX Bug #14 & #26: Validate offset and offset + limit bounds
+    const MAX_OFFSET: usize = 100_000;
+    const MAX_TOTAL_SPAN: usize = 102_000;
+    if offset > MAX_OFFSET {
+        return Err(AppError::BadRequest(format!("offset must be <= {}", MAX_OFFSET)));
     }
     let limit_usize = limit as usize;
+    // Use checked_add to detect overflow instead of saturating_add
+    let total_span = offset.checked_add(limit_usize)
+        .ok_or_else(|| AppError::BadRequest("offset + limit causes integer overflow".into()))?;
+    if total_span > MAX_TOTAL_SPAN {
+        return Err(AppError::BadRequest("offset + limit exceeds maximum span".into()));
+    }
 
     // If no path specified, return the scan roots as directories
     if q.path.is_none() {

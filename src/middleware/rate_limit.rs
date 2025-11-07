@@ -163,11 +163,10 @@ impl EndpointRateLimiter {
         // Extract existing limiters or create new HashMap
         let mut limiters_map = match Arc::try_unwrap(self.limiters) {
             Ok(rwlock) => rwlock.into_inner(),
-            Err(arc) => {
-                // If Arc has multiple owners, clone the inner data
-                let guard = arc.blocking_read();
-                guard.clone()
-            }
+            Err(arc) => arc
+                .try_read()
+                .map(|guard| guard.clone())
+                .unwrap_or_else(|_| HashMap::new()),
         };
         
         // Add/update new limits

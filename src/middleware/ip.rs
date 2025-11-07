@@ -2,7 +2,6 @@ use axum::{
     extract::{connect_info::ConnectInfo, FromRequestParts},
     http::{request::Parts, HeaderMap},
 };
-use async_trait::async_trait;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 
@@ -31,17 +30,21 @@ pub fn extract_ip_from_headers(headers: &HeaderMap, fallback: Option<IpAddr>) ->
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MaybeRemoteAddr(pub Option<SocketAddr>);
 
-#[async_trait]
 impl<S> FromRequestParts<S> for MaybeRemoteAddr
 where
-    S: Send + Sync + 'static,
+    S: Send + Sync,
 {
     type Rejection = Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        match ConnectInfo::<SocketAddr>::from_request_parts(parts, state).await {
-            Ok(ConnectInfo(addr)) => Ok(MaybeRemoteAddr(Some(addr))),
-            Err(_) => Ok(MaybeRemoteAddr(None)),
+    fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        async move {
+            match ConnectInfo::<SocketAddr>::from_request_parts(parts, state).await {
+                Ok(ConnectInfo(addr)) => Ok(MaybeRemoteAddr(Some(addr))),
+                Err(_) => Ok(MaybeRemoteAddr(None)),
+            }
         }
     }
 }

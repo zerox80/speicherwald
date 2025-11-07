@@ -18,6 +18,8 @@ tower = "0.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"
 thiserror = "1"
+# Async trait support for optional connect info extractor
+async-trait = "0.1"
 # File log rotation
 tracing-appender = "0.2"
 # SQLite + migrations

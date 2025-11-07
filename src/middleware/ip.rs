@@ -34,7 +34,7 @@ pub struct MaybeRemoteAddr(pub Option<SocketAddr>);
 #[async_trait]
 impl<S> FromRequestParts<S> for MaybeRemoteAddr
 where
-    S: Send + Sync,
+    S: Send + Sync + 'static,
 {
     type Rejection = Infallible;
 

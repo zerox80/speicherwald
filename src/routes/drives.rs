@@ -1,14 +1,13 @@
 use axum::{
-    extract::{connect_info::ConnectInfo, State},
+    extract::State,
     http::HeaderMap,
     response::{IntoResponse, Response},
     Json,
 };
 use serde::Serialize;
-use std::net::SocketAddr;
 
 use crate::state::AppState;
-use crate::{middleware::ip::extract_ip_from_headers, types::DriveInfo};
+use crate::{middleware::ip::{extract_ip_from_headers, MaybeRemoteAddr}, types::DriveInfo};
 
 #[derive(Serialize)]
 struct DrivesResponse {
@@ -18,7 +17,7 @@ struct DrivesResponse {
 #[cfg(windows)]
 pub async fn list_drives(
     State(state): State<AppState>,
-    maybe_remote: Option<ConnectInfo<SocketAddr>>,
+    maybe_remote: MaybeRemoteAddr,
     headers: HeaderMap,
 ) -> Response {
     use std::{sync::mpsc, thread, time::Duration};
@@ -26,7 +25,7 @@ pub async fn list_drives(
     use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives};
 
     // Per-endpoint rate limit: "/drives"
-    let fallback_ip = maybe_remote.map(|ConnectInfo(addr)| addr.ip());
+    let fallback_ip = maybe_remote.0.map(|addr| addr.ip());
     let ip = extract_ip_from_headers(&headers, fallback_ip);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/drives", ip).await {
         return (status, body).into_response();
@@ -114,11 +113,11 @@ pub async fn list_drives(
 #[cfg(not(windows))]
 pub async fn list_drives(
     State(state): State<AppState>,
-    maybe_remote: Option<ConnectInfo<SocketAddr>>,
+    maybe_remote: MaybeRemoteAddr,
     headers: HeaderMap,
 ) -> Response {
     // Per-endpoint rate limit: "/drives"
-    let fallback_ip = maybe_remote.map(|ConnectInfo(addr)| addr.ip());
+    let fallback_ip = maybe_remote.0.map(|addr| addr.ip());
     let ip = extract_ip_from_headers(&headers, fallback_ip);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/drives", ip).await {
         return (status, body).into_response();

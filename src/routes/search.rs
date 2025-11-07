@@ -1,5 +1,5 @@
 use axum::{
-    extract::{connect_info::ConnectInfo, Path, Query, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     response::IntoResponse,
     Json,
@@ -7,11 +7,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row};
 use uuid::Uuid;
-use std::net::SocketAddr;
 
 use crate::{
     error::{AppError, AppResult},
-    middleware::ip::extract_ip_from_headers,
+    middleware::ip::{extract_ip_from_headers, MaybeRemoteAddr},
     state::AppState,
 };
 
@@ -98,12 +97,12 @@ fn sanitize_search_term(raw: &str) -> Result<String, AppError> {
 pub async fn search_scan(
     State(state): State<AppState>,
     Path(scan_id): Path<Uuid>,
-    maybe_remote: Option<ConnectInfo<SocketAddr>>,
+    maybe_remote: MaybeRemoteAddr,
     headers: HeaderMap,
     Query(query): Query<SearchQuery>,
 ) -> AppResult<impl IntoResponse> {
     // Per-endpoint rate limit: "/scans/:id/search"
-    let fallback_ip = maybe_remote.map(|ConnectInfo(addr)| addr.ip());
+    let fallback_ip = maybe_remote.0.map(|addr| addr.ip());
     let ip = extract_ip_from_headers(&headers, fallback_ip);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/scans/:id/search", ip).await {
         return Ok((status, body).into_response());

@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::anyhow;
 use axum::{
-    extract::{connect_info::ConnectInfo, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -14,12 +14,11 @@ use axum::{
 use chrono::Utc;
 use tokio::task::spawn_blocking;
 use walkdir::WalkDir;
-use std::net::SocketAddr;
 
 use crate::{
     error::{AppError, AppResult},
     middleware::{
-        ip::extract_ip_from_headers,
+        ip::{extract_ip_from_headers, MaybeRemoteAddr},
         validation::{sanitize_for_logging, validate_file_path},
     },
     routes::paths_helpers::get_volume_root,
@@ -36,11 +35,11 @@ struct MoveOutcome {
 
 pub async fn move_path(
     State(state): State<AppState>,
-    maybe_remote: Option<ConnectInfo<SocketAddr>>,
+    maybe_remote: MaybeRemoteAddr,
     headers: HeaderMap,
     Json(req): Json<MovePathRequest>,
 ) -> AppResult<Response> {
-    let fallback_ip = maybe_remote.map(|ConnectInfo(addr)| addr.ip());
+    let fallback_ip = maybe_remote.0.map(|addr| addr.ip());
     let ip = extract_ip_from_headers(&headers, fallback_ip);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/paths/move", ip).await {
         return Ok((status, body).into_response());

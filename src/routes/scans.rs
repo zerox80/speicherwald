@@ -1,8 +1,8 @@
-use std::{net::SocketAddr, path::{Path as StdPath, PathBuf}, time::Duration};
+use std::{path::{Path as StdPath, PathBuf}, time::Duration};
 
 use axum::response::sse::{Event, Sse};
 use axum::{
-    extract::{connect_info::ConnectInfo, Path, Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     error::{AppError, AppResult},
-    middleware::ip::extract_ip_from_headers,
+    middleware::ip::{extract_ip_from_headers, MaybeRemoteAddr},
     middleware::validation::{validate_file_path, validate_scan_options},
     scanner,
     state::{AppState, JobHandle},
@@ -30,12 +30,12 @@ use crate::{
 
 pub async fn create_scan(
     State(state): State<AppState>,
-    maybe_remote: Option<ConnectInfo<SocketAddr>>,
+    remote: MaybeRemoteAddr,
     headers: HeaderMap,
     Json(req): Json<CreateScanRequest>,
 ) -> AppResult<Response> {
     // Per-endpoint rate limit: "/scans"
-    let fallback_ip = maybe_remote.map(|ConnectInfo(addr)| addr.ip());
+    let fallback_ip = remote.0.map(|addr| addr.ip());
     let ip = extract_ip_from_headers(&headers, fallback_ip);
     if let Err((status, body)) = state.rate_limiter.check_endpoint_limit("/scans", ip).await {
         return Ok((status, body).into_response());

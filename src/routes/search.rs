@@ -14,22 +14,31 @@ use crate::{
     state::AppState,
 };
 
+/// Query parameters for the search endpoint.
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
+    /// The search term.
     pub query: String,
+    /// The maximum number of results to return.
     #[serde(default = "default_limit")]
     pub limit: i64,
+    /// The number of results to skip.
     #[serde(default)]
     pub offset: i64,
+    /// The minimum file size in bytes.
     #[serde(default)]
     pub min_size: Option<i64>,
+    /// The maximum file size in bytes.
     #[serde(default)]
     pub max_size: Option<i64>,
+    /// The file extension to filter by.
     #[serde(default)]
     #[serde(alias = "type")]
     pub file_type: Option<String>, // e.g., "txt", "pdf", "jpg" (also accepts query param 'type')
+    /// Whether to include files in the search results.
     #[serde(default)]
     pub include_files: Option<bool>,
+    /// Whether to include directories in the search results.
     #[serde(default)]
     pub include_dirs: Option<bool>,
 }
@@ -38,30 +47,49 @@ fn default_limit() -> i64 {
     100
 }
 
+/// The response from the search endpoint.
 #[derive(Debug, Serialize)]
 pub struct SearchResult {
+    /// The search results.
     pub items: Vec<SearchItem>,
+    /// The total number of matching items.
     pub total_count: i64,
+    /// The original search query.
     pub query: String,
 }
 
+/// An item in the search results.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 pub enum SearchItem {
+    /// A directory search result.
     Dir {
+        /// The path of the directory.
         path: String,
+        /// The name of the directory.
         name: String,
+        /// The allocated size of the directory in bytes.
         allocated_size: i64,
+        /// The logical size of the directory in bytes.
         logical_size: i64,
+        /// The number of files in the directory.
         file_count: i64,
+        /// The number of subdirectories in the directory.
         dir_count: i64,
+        /// The depth of the directory in the directory tree.
         depth: i64,
     },
+    /// A file search result.
     File {
+        /// The path of the file.
         path: String,
+        /// The name of the file.
         name: String,
+        /// The allocated size of the file in bytes.
         allocated_size: i64,
+        /// The logical size of the file in bytes.
         logical_size: i64,
+        /// The file extension.
         extension: Option<String>,
     },
 }
@@ -94,6 +122,21 @@ fn sanitize_search_term(raw: &str) -> Result<String, AppError> {
     Ok(sanitized)
 }
 
+/// Searches for files and directories within a scan.
+///
+/// This endpoint supports full-text search, size filtering, and type filtering.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `scan_id` - The ID of the scan to search.
+/// * `maybe_remote` - The optional remote address of the client.
+/// * `headers` - The request headers.
+/// * `query` - The search query parameters.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A JSON response containing the search results.
 pub async fn search_scan(
     State(state): State<AppState>,
     Path(scan_id): Path<Uuid>,

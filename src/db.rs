@@ -1,5 +1,18 @@
 use sqlx::SqlitePool;
 
+/// Initializes the database by creating tables and indexes if they don't exist.
+///
+/// This function sets up the SQLite database with the required schema for the application.
+/// It also applies several PRAGMA settings for performance and durability.
+///
+/// # Arguments
+///
+/// * `pool` - A `SqlitePool` connection pool to the database.
+///
+/// # Returns
+///
+/// * `anyhow::Result<()>` - `Ok(())` on successful initialization, or an error if
+///   any of the database operations fail.
 pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     // FIX Bug #57 - Log PRAGMA failures
     // Pragmas for better durability/performance

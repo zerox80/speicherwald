@@ -6,12 +6,18 @@ use axum::{
     Json,
 };
 
-// Health check endpoint - lightweight, no rate limiting
+/// A simple health check endpoint.
+///
+/// This endpoint can be used to check if the application is running. It does not
+/// perform any external checks (e.g., database connectivity).
 pub async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
-// Readiness probe: checks DB connectivity with timeout protection
+/// A readiness probe that checks for database connectivity.
+///
+/// This endpoint is used to determine if the application is ready to handle requests.
+/// It performs a simple query to the database to ensure a connection can be established.
 pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     // Add timeout to prevent hanging readiness checks
     let query = sqlx::query("SELECT 1").fetch_one(&state.db);
@@ -22,13 +28,13 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-// Metrics endpoint: returns JSON snapshot
+/// Returns a JSON snapshot of the application's metrics.
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let snapshot = state.metrics.get_snapshot();
     Json(snapshot)
 }
 
-// Prometheus-compatible text exposition format
+/// Returns the application's metrics in Prometheus exposition format.
 pub async fn metrics_prometheus(State(state): State<AppState>) -> impl IntoResponse {
     let m = state.metrics.get_snapshot();
     let body = format!(
@@ -52,7 +58,7 @@ pub async fn metrics_prometheus(State(state): State<AppState>) -> impl IntoRespo
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 
-// Version/Build info endpoint (JSON)
+/// Returns the application's version and build information.
 pub async fn version() -> impl IntoResponse {
     let body = serde_json::json!({
         "name": env!("CARGO_PKG_NAME"),

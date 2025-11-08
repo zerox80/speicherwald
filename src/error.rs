@@ -9,20 +9,43 @@ use serde_json::json;
 use std::error::Error;
 use std::fmt;
 
-/// Custom error type for the application
+/// The primary error type for the application.
+///
+/// This enum consolidates all possible errors that can occur within the application,
+/// providing a unified way to handle and respond to failures.
 #[derive(Debug)]
 pub enum AppError {
+    /// For internal server errors that are not expected to be handled by the client.
     Internal(anyhow::Error),
+    /// For client errors due to invalid requests.
     BadRequest(String),
+    /// For when a requested resource is not found.
     NotFound(String),
+    /// For when a request conflicts with the current state of the server.
     Conflict(String),
+    /// For when a service is temporarily unavailable.
     ServiceUnavailable(String),
+    /// For errors related to database operations.
     Database(String),
+    /// For when user input is invalid.
     InvalidInput(String),
+    /// For errors that occur during the scanning process.
     Scanner(String),
+    /// For when a request is not authorized.
     Unauthorized(String),
-    RateLimited { retry_after_seconds: u64 },
-    ValidationError { field: String, message: String },
+    /// For when a client has sent too many requests in a given amount of time.
+    RateLimited {
+        /// The number of seconds to wait before retrying the request.
+        retry_after_seconds: u64,
+    },
+    /// For when a specific field in a request fails validation.
+    ValidationError {
+        /// The name of the field that failed validation.
+        field: String,
+        /// A message describing the validation error.
+        message: String,
+    },
+    /// For errors related to I/O operations.
     IoError(String),
 }
 
@@ -166,11 +189,22 @@ impl From<globset::Error> for AppError {
     }
 }
 
-/// Result type alias for the application
+/// A type alias for `Result<T, AppError>`, used throughout the application.
 pub type AppResult<T> = Result<T, AppError>;
 
-/// Helper trait for converting Options to Results with context
+/// An extension trait for `Option` that provides a convenient way to convert
+/// an `Option` to a `Result` with a `NotFound` error.
 pub trait OptionExt<T> {
+    /// Converts an `Option<T>` to a `Result<T, AppError>`.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity` - A string describing the entity that was not found.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(T)` if the `Option` is `Some(T)`.
+    /// * `Err(AppError::NotFound)` if the `Option` is `None`.
     fn ok_or_not_found(self, entity: &str) -> AppResult<T>;
 }
 
@@ -180,11 +214,22 @@ impl<T> OptionExt<T> for Option<T> {
     }
 }
 
-/// Validation helper functions
+/// A module containing helper functions for request validation.
 pub mod validation {
     use super::*;
     use std::path::Path;
 
+    /// Validates a file path.
+    ///
+    /// This function checks if a path is empty or contains null characters.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to validate.
+    ///
+    /// # Returns
+    ///
+    /// * `AppResult<()>` - `Ok(())` if the path is valid, or an `AppError` if it's not.
     pub fn validate_path(path: &str) -> AppResult<()> {
         if path.is_empty() {
             return Err(AppError::ValidationError {
@@ -203,6 +248,16 @@ pub mod validation {
         Ok(())
     }
 
+    /// Validates that a number is positive.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The number to validate.
+    /// * `field` - The name of the field being validated.
+    ///
+    /// # Returns
+    ///
+    /// * `AppResult<()>` - `Ok(())` if the number is positive, or an `AppError` if it's not.
     pub fn validate_positive_number(value: Option<i64>, field: &str) -> AppResult<()> {
         if let Some(v) = value {
             if v <= 0 {
@@ -215,6 +270,15 @@ pub mod validation {
         Ok(())
     }
 
+    /// Validates that a list of paths exist on the filesystem.
+    ///
+    // # Arguments
+    ///
+    /// * `paths` - A slice of paths to validate.
+    ///
+    /// # Returns
+    ///
+    /// * `AppResult<()>` - `Ok(())` if all paths exist, or an `AppError` if any of them don't.
     pub fn validate_paths_exist(paths: &[String]) -> AppResult<()> {
         for path_str in paths {
             let path = Path::new(path_str);

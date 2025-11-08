@@ -14,6 +14,20 @@ struct DrivesResponse {
     items: Vec<DriveInfo>,
 }
 
+/// (Windows specific) Lists the available drives and their storage information.
+///
+/// This function uses the Windows API to enumerate logical drives and retrieve
+/// their type, total size, and free space.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `maybe_remote` - The optional remote address of the client.
+/// * `headers` - The request headers.
+///
+/// # Returns
+///
+/// * `Response` - A JSON response containing a list of `DriveInfo` objects.
 #[cfg(windows)]
 pub async fn list_drives(
     State(state): State<AppState>,
@@ -110,6 +124,20 @@ pub async fn list_drives(
     Json(DrivesResponse { items }).into_response()
 }
 
+/// (Non-Windows) Fallback implementation for listing drives.
+///
+/// This function returns an empty list of drives, as the drive enumeration
+/// logic is specific to the Windows API.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `maybe_remote` - The optional remote address of the client.
+/// * `headers` - The request headers.
+///
+/// # Returns
+///
+/// * `Response` - A JSON response containing an empty list.
 #[cfg(not(windows))]
 pub async fn list_drives(
     State(state): State<AppState>,

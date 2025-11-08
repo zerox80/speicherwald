@@ -35,6 +35,16 @@ const UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
 const UI_INDEX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/index.html");
 
 #[tokio::main]
+/// The main entry point of the application.
+///
+/// This function initializes the logger, loads configuration, sets up the database,
+/// creates the application state, spawns background tasks, configures the Axum router,
+/// and starts the HTTP server.
+///
+/// # Returns
+///
+/// * `anyhow::Result<()>` - `Ok(())` on successful execution, or an error if
+///   something goes wrong during setup or server execution.
 async fn main() -> anyhow::Result<()> {
     // Logging (stdout + tägliche Datei-Rotation unter ./logs)
     std::fs::create_dir_all("logs").ok();
@@ -219,6 +229,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Listens for shutdown signals (Ctrl+C, SIGTERM) and gracefully shuts down the server.
+///
+/// This function waits for either a Ctrl+C signal or, on Unix systems, a SIGTERM
+/// signal. Once a signal is received, it logs a shutdown message and allows the
+/// `with_graceful_shutdown` method in `main` to proceed with stopping the server.
+/// A small delay is added to allow log buffers to flush before the process exits.
 async fn shutdown_signal() {
     #[cfg(unix)]
     {

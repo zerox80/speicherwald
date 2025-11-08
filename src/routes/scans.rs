@@ -28,6 +28,22 @@ use crate::{
     },
 };
 
+/// Creates a new scan.
+///
+/// This endpoint initiates a new scan of the specified root paths. The scan is
+/// performed in the background, and the initial response contains the ID of the
+/// new scan.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `remote` - The optional remote address of the client.
+/// * `headers` - The request headers.
+/// * `req` - The create scan request payload.
+///
+/// # Returns
+///
+/// * `AppResult<Response>` - A JSON response containing the ID and status of the new scan.
 pub async fn create_scan(
     State(state): State<AppState>,
     remote: MaybeRemoteAddr,
@@ -231,6 +247,15 @@ pub async fn create_scan(
     Ok((StatusCode::ACCEPTED, Json(resp)).into_response())
 }
 
+/// Lists the most recent scans.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A JSON response containing a list of `ScanSummary` objects.
 pub async fn list_scans(State(state): State<AppState>) -> AppResult<impl IntoResponse> {
     let rows = sqlx::query(
         r#"SELECT id, status, started_at, finished_at,
@@ -268,6 +293,16 @@ pub async fn list_scans(State(state): State<AppState>) -> AppResult<impl IntoRes
     Ok(Json(items))
 }
 
+/// Gets the details of a specific scan.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan to retrieve.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A JSON response containing the `ScanSummary` of the scan.
 pub async fn get_scan(State(state): State<AppState>, Path(id): Path<Uuid>) -> AppResult<impl IntoResponse> {
     let r = sqlx::query(
         r#"SELECT id, status, started_at, finished_at,
@@ -300,11 +335,27 @@ pub async fn get_scan(State(state): State<AppState>, Path(id): Path<Uuid>) -> Ap
     }
 }
 
+/// Query parameters for the cancel scan endpoint.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct CancelQuery {
+    /// Whether to delete the scan data from the database.
     pub purge: Option<bool>,
 }
 
+/// Cancels a running scan.
+///
+/// If the `purge` query parameter is set to `true`, the scan data will also be
+/// deleted from the database.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan to cancel.
+/// * `q` - The cancel query parameters.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A `204 No Content` response on success.
 pub async fn cancel_scan(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -347,6 +398,20 @@ pub async fn cancel_scan(
     Ok((StatusCode::NO_CONTENT, ""))
 }
 
+/// Streams real-time events for a running scan.
+///
+/// This endpoint uses Server-Sent Events (SSE) to push `ScanEvent` messages to
+/// the client as they occur.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan to stream events for.
+///
+/// # Returns
+///
+/// * `AppResult<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>>` -
+///  An SSE stream of scan events.
 pub async fn scan_events(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -546,14 +611,33 @@ fn normalize_query_path(p: &str) -> AppResult<String> {
 
 // ---------------------- TREE ENDPOINT ----------------------
 
+/// Query parameters for the tree endpoint.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct TreeQuery {
+    /// The root path of the subtree to retrieve.
     pub path: Option<String>,
+    /// The maximum depth of the subtree to retrieve.
     pub depth: Option<i64>,
+    /// The sort order for the results (e.g., "size", "name").
     pub sort: Option<String>, // size|name
+    /// The maximum number of results to return.
     pub limit: Option<i64>,
 }
 
+/// Gets a hierarchical view of the scanned directory tree.
+///
+/// This endpoint can be used to retrieve the entire directory tree or a specific
+/// subtree.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan.
+/// * `q` - The tree query parameters.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A JSON response containing a list of `NodeDto` objects.
 pub async fn get_tree(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -649,12 +733,26 @@ pub async fn get_tree(
 
 // ---------------------- TOP ENDPOINT ----------------------
 
+/// Query parameters for the top endpoint.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct TopQuery {
+    /// The scope of the results (e.g., "dirs", "files").
     pub scope: Option<String>, // dirs|files
+    /// The maximum number of results to return.
     pub limit: Option<i64>,
 }
 
+/// Gets the top N largest files or directories in a scan.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan.
+/// * `q` - The top query parameters.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A JSON response containing a list of `TopItem` objects.
 pub async fn get_top(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -720,15 +818,34 @@ pub async fn get_top(
 
 // ---------------------- LIST ENDPOINT ----------------------
 
+/// Query parameters for the list endpoint.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct ListQuery {
+    /// The path of the directory to list. If not provided, the root directories of the scan are listed.
     pub path: Option<String>,  // if None: list roots only (directories)
+    /// The sort order for the results (e.g., "allocated", "logical", "name", "type").
     pub sort: Option<String>,  // allocated|logical|name|type
+    /// The sort direction ("asc" or "desc").
     pub order: Option<String>, // asc|desc
+    /// The maximum number of results to return.
     pub limit: Option<i64>,
+    /// The number of results to skip.
     pub offset: Option<i64>,
 }
 
+/// Lists the contents of a directory.
+///
+/// This endpoint can be used to navigate the scanned directory tree.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan.
+/// * `q` - The list query parameters.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A JSON response containing a list of `ListItem` objects.
 pub async fn get_list(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -897,15 +1014,31 @@ pub async fn get_list(
 
 // ---------------------- RECENT ENDPOINT ----------------------
 
+/// Query parameters for the recent endpoint.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct RecentQuery {
+    /// The scope of the results (e.g., "dirs", "files", "all").
     pub scope: Option<String>, // dirs|files|all
+    /// The maximum number of results to return.
     pub limit: Option<i64>,
+    /// An optional path to filter the results to a specific subtree.
     pub path: Option<String>, // optional subtree filter
 }
 
-/// Returns most recently accessed items (based on filesystem atime), best-effort.
-/// Note: Access time may be disabled on some file systems; results may be None.
+/// Returns the most recently accessed files and directories in a scan.
+///
+/// This endpoint provides a list of items based on their access time, which may
+/// not be available on all filesystems.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan.
+/// * `q` - The recent query parameters.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A JSON response containing a list of `TopItem` objects.
 pub async fn get_recent(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

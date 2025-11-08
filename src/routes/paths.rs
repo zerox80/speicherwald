@@ -33,6 +33,23 @@ struct MoveOutcome {
     warnings: Vec<String>,
 }
 
+/// Moves or copies a file or directory.
+///
+/// This endpoint handles both move (rename) and copy operations. If `remove_source`
+/// is true, it will attempt to rename the source to the destination. If that fails
+/// (e.g., across different filesystems), it will fall back to a copy-then-delete
+/// operation.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `maybe_remote` - The optional remote address of the client.
+/// * `headers` - The request headers.
+/// * `req` - The move path request payload.
+///
+/// # Returns
+///
+/// * `AppResult<Response>` - A JSON response containing the details of the move operation.
 pub async fn move_path(
     State(state): State<AppState>,
     maybe_remote: MaybeRemoteAddr,

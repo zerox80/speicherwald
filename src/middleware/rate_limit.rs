@@ -16,6 +16,7 @@ use std::{
 };
 use tokio::sync::RwLock;
 
+/// A thread-safe rate limiter based on the sliding window algorithm.
 #[derive(Clone)]
 pub struct RateLimiter {
     requests: Arc<RwLock<HashMap<IpAddr, Vec<Instant>>>>,
@@ -24,6 +25,12 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
+    /// Creates a new `RateLimiter`.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_requests` - The maximum number of requests allowed within the time window.
+    /// * `window_seconds` - The duration of the time window in seconds.
     pub fn new(max_requests: usize, window_seconds: u64) -> Self {
         Self {
             requests: Arc::new(RwLock::new(HashMap::new())),
@@ -32,6 +39,14 @@ impl RateLimiter {
         }
     }
 
+    /// Checks if a request from a given IP address is allowed.
+    ///
+    /// If the request is allowed, it is recorded and `Ok(())` is returned.
+    /// If the request is rate-limited, an `Err` containing the HTTP response is returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `ip` - The IP address of the client.
     pub async fn check_rate_limit(&self, ip: IpAddr) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
         let now = Instant::now();
         let mut requests = self.requests.write().await;
@@ -75,6 +90,10 @@ impl RateLimiter {
         Ok(())
     }
 
+    /// Removes old entries from the rate limiter's storage.
+    ///
+    /// This function iterates through the stored IP addresses and removes timestamps
+    /// that are outside the time window.
     pub async fn cleanup_old_entries(&self) {
         let now = Instant::now();
         let mut requests = self.requests.write().await;
@@ -87,6 +106,20 @@ impl RateLimiter {
     }
 }
 
+/// An Axum middleware for global rate limiting.
+///
+/// This middleware uses a global `RateLimiter` instance to limit the number of
+/// requests per IP address.
+///
+/// # Arguments
+///
+/// * `req` - The incoming `Request`.
+/// * `next` - The next middleware in the chain.
+///
+/// # Returns
+///
+/// * `Response` - The response from the next middleware, or a `429 Too Many Requests`
+///  response if the client is rate-limited.
 pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
     // Extract IP address via shared helper
     let remote_ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|info| info.0.ip());
@@ -139,7 +172,10 @@ pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
     }
 }
 
-// Per-endpoint rate limiting
+/// A manager for per-endpoint rate limiters.
+///
+/// This struct holds a collection of `RateLimiter` instances, each associated with a
+/// specific endpoint.
 #[derive(Clone)]
 pub struct EndpointRateLimiter {
     limiters: Arc<RwLock<HashMap<String, RateLimiter>>>,
@@ -152,13 +188,20 @@ impl Default for EndpointRateLimiter {
 }
 
 impl EndpointRateLimiter {
+    /// Creates a new, empty `EndpointRateLimiter`.
     pub fn new() -> Self {
         Self { limiters: Arc::new(RwLock::new(HashMap::new())) }
     }
 
-    /// Add or update per-endpoint rate limits.
-    /// This method extends existing limits rather than replacing them.
-    /// If an endpoint already has a limit, it will be updated.
+    /// Configures the rate limiter with a set of endpoint-specific limits.
+    ///
+    /// This method extends the existing limits rather than replacing them. If an endpoint
+    /// already has a limit, it will be updated.
+    ///
+    /// # Arguments
+    ///
+    /// * `limits` - A vector of tuples, where each tuple contains the endpoint path,
+    ///   the maximum number of requests, and the time window in seconds.
     pub fn with_limits(self, limits: Vec<(&str, usize, u64)>) -> Self {
         // Extract existing limiters or create new HashMap
         let mut limiters_map = match Arc::try_unwrap(self.limiters) {
@@ -179,6 +222,12 @@ impl EndpointRateLimiter {
         }
     }
 
+    /// Checks if a request to a specific endpoint from a given IP address is allowed.
+    ///
+    /// # Arguments
+    ///
+    /// * `endpoint` - The path of the endpoint being accessed.
+    /// * `ip` - The IP address of the client.
     pub async fn check_endpoint_limit(
         &self,
         endpoint: &str,
@@ -194,7 +243,7 @@ impl EndpointRateLimiter {
         }
     }
 
-    /// Periodically prune old entries from all endpoint-specific limiters
+    /// Cleans up old entries from all endpoint-specific rate limiters.
     pub async fn cleanup_all(&self) {
         // Clone out current limiters to avoid holding the read lock across awaits.
         let snapshot: Vec<RateLimiter> = {
@@ -207,7 +256,11 @@ impl EndpointRateLimiter {
     }
 }
 
-// Cleanup task that runs periodically
+/// A background task that periodically cleans up old entries from a `RateLimiter`.
+///
+/// # Arguments
+///
+/// * `limiter` - The `RateLimiter` to clean up.
 pub async fn cleanup_task(limiter: RateLimiter) {
     let mut interval = tokio::time::interval(Duration::from_secs(300)); // Clean every 5 minutes
 

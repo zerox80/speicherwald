@@ -1,5 +1,13 @@
 // Helper functions for path operations
 
+/// (Windows specific) Gets the root of the volume for a given path.
+///
+/// For standard paths (e.g., `C:\Users`), this returns the drive root (`C:\`).
+/// For UNC paths (e.g., `\\server\share\folder`), this returns the share root (`\\server\share`).
+///
+/// # Arguments
+///
+/// * `path` - The path to get the volume root for.
 #[cfg(windows)]
 pub fn get_volume_root(path: &std::path::Path) -> String {
     let path_str = path.to_string_lossy();
@@ -22,6 +30,9 @@ pub fn get_volume_root(path: &std::path::Path) -> String {
     "C:\\".to_string()
 }
 
+/// (Non-Windows) Fallback for getting the volume root.
+///
+/// This function always returns `/` as the root.
 #[cfg(not(windows))]
 pub fn get_volume_root(_path: &std::path::Path) -> String {
     "/".to_string()

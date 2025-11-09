@@ -1,15 +1,31 @@
-// Helper functions for path operations
+//! Path manipulation utilities for cross-platform file system operations.
+//!
+//! This module provides helper functions for handling file paths across different
+//! operating systems, with special handling for Windows drive paths and UNC paths.
+//! These utilities are used throughout the application to ensure consistent
+//! path handling regardless of the underlying platform.
 
-/// (Windows specific) Gets the root of the volume for a given path.
+use std::path::Path;
+
+/// Windows-specific function to get the volume root for a given path.
 ///
-/// For standard paths (e.g., `C:\Users`), this returns the drive root (`C:\`).
-/// For UNC paths (e.g., `\\server\share\folder`), this returns the share root (`\\server\share`).
+/// This function extracts the volume root from various Windows path formats:
+/// - Standard drive paths (e.g., `C:\Users`) → `C:\`
+/// - UNC paths (e.g., `\\server\share\folder`) → `\\server\share`
+/// - Invalid or malformed paths → `C:\` (default)
+///
+/// This is essential for operations that need to work with volume-level
+/// information, such as determining available drive space.
 ///
 /// # Arguments
 ///
-/// * `path` - The path to get the volume root for.
+/// * `path` - The path to extract the volume root from
+///
+/// # Returns
+///
+/// A string containing the volume root path
 #[cfg(windows)]
-pub fn get_volume_root(path: &std::path::Path) -> String {
+pub fn get_volume_root(path: &Path) -> String {
     let path_str = path.to_string_lossy();
     
     // Extract drive letter for regular paths
@@ -30,10 +46,21 @@ pub fn get_volume_root(path: &std::path::Path) -> String {
     "C:\\".to_string()
 }
 
-/// (Non-Windows) Fallback for getting the volume root.
+/// Non-Windows fallback function for getting the volume root.
 ///
-/// This function always returns `/` as the root.
+/// On Unix-like systems (Linux, macOS, etc.), there is a single unified
+/// filesystem hierarchy starting at the root directory `/`. This function
+/// provides a consistent interface across platforms by always returning the
+/// Unix root path.
+///
+/// # Arguments
+///
+/// * `_path` - The path parameter is ignored on non-Windows systems
+///
+/// # Returns
+///
+/// Always returns `"/"` - the Unix root directory
 #[cfg(not(windows))]
-pub fn get_volume_root(_path: &std::path::Path) -> String {
+pub fn get_volume_root(_path: &Path) -> String {
     "/".to_string()
 }

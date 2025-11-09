@@ -1,3 +1,18 @@
+//! Data export API endpoints for scan results.
+//!
+//! This module provides HTTP endpoints for exporting scan data in various formats
+//! including CSV and JSON. It supports both partial and full exports of scan
+//! results with configurable limits and scopes.
+//!
+//! ## Features
+//!
+//! - **Multiple Formats**: Export data as CSV or JSON
+//! - **Flexible Scopes**: Export nodes (directories), files, or both
+//! - **Configurable Limits**: Control the number of records exported
+//! - **Statistics**: Export summary statistics for scans
+//! - **CSV Escaping**: Proper CSV escaping for special characters
+//! - **Batch Processing**: Efficient chunked database queries
+
 use axum::{
     extract::{Path, Query, State},
     http::header,
@@ -24,6 +39,18 @@ pub struct ExportQuery {
     pub limit: Option<i64>,
 }
 
+/// Formats a node record as a CSV line.
+///
+/// This function converts a directory node into a properly escaped CSV format
+/// with all relevant metadata fields.
+///
+/// # Arguments
+///
+/// * `node` - The node to format
+///
+/// # Returns
+///
+/// A string containing the CSV-formatted node record
 fn format_node_csv(node: &NodeExport) -> String {
     format!(
         "Dir,\"{}\",\"{}\",{},{},{},{},{},{}\n",
@@ -128,6 +155,21 @@ pub async fn export_scan(
     }
 }
 
+/// Exports scan data in CSV format.
+///
+/// This function generates a CSV file containing scan results based on the specified scope.
+/// It includes proper headers and handles both nodes (directories) and files.
+///
+/// # Arguments
+///
+/// * `state` - The application state containing database connection
+/// * `scan_id` - The UUID of the scan to export
+/// * `scope` - The export scope: "nodes", "files", or "all"
+/// * `limit` - Maximum number of records to export
+///
+/// # Returns
+///
+/// An HTTP response with CSV content and appropriate headers for file download
 async fn export_csv(state: AppState, scan_id: Uuid, scope: &str, limit: i64) -> AppResult<impl IntoResponse> {
     use axum::http::HeaderValue;
 
@@ -177,6 +219,21 @@ async fn export_csv(state: AppState, scan_id: Uuid, scope: &str, limit: i64) -> 
     Ok(response)
 }
 
+/// Exports scan data in JSON format.
+///
+/// This function generates a JSON file containing scan results based on the specified scope.
+/// The JSON structure includes metadata about the export and arrays of nodes and files.
+///
+/// # Arguments
+///
+/// * `state` - The application state containing database connection
+/// * `scan_id` - The UUID of the scan to export
+/// * `scope` - The export scope: "nodes", "files", or "all"
+/// * `limit` - Maximum number of records to export
+///
+/// # Returns
+///
+/// An HTTP response with JSON content and appropriate headers for file download
 async fn export_json(
     state: AppState,
     scan_id: Uuid,
@@ -212,6 +269,20 @@ async fn export_json(
     Ok(response)
 }
 
+/// Escapes a string for safe CSV output.
+///
+/// This function handles CSV escaping by replacing dangerous characters:
+/// - Double quotes are escaped as two double quotes
+/// - Newline and carriage return are replaced with spaces
+/// - Other control characters are replaced with spaces
+///
+/// # Arguments
+///
+/// * `s` - The string to escape
+///
+/// # Returns
+///
+/// A CSV-safe version of the input string
 fn escape_csv(s: &str) -> String {
     // FIX Bug #55 - Proper CSV escaping: double quotes become two double quotes
     // More efficient: do all replacements in one pass
@@ -225,8 +296,26 @@ fn escape_csv(s: &str) -> String {
         .collect()
 }
 
+/// Chunk size for database export queries.
+///
+/// This constant defines the number of records fetched per database query
+/// to balance memory usage and performance.
 const EXPORT_CHUNK_SIZE: i64 = 800;
 
+/// Fetches node records from the database for export.
+///
+/// This function retrieves directory node records in chunks to avoid loading
+/// all data into memory at once. It orders by allocated size in descending order.
+///
+/// # Arguments
+///
+/// * `state` - The application state containing database connection
+/// * `scan_id` - The UUID of the scan to export
+/// * `limit` - Maximum number of records to fetch
+///
+/// # Returns
+///
+/// A vector of `NodeExport` records containing directory information
 async fn fetch_nodes_export(state: &AppState, scan_id: Uuid, limit: i64) -> Result<Vec<NodeExport>, sqlx::Error> {
     let mut results = Vec::new();
     let mut offset: i64 = 0;
@@ -271,6 +360,20 @@ async fn fetch_nodes_export(state: &AppState, scan_id: Uuid, limit: i64) -> Resu
     Ok(results)
 }
 
+/// Fetches file records from the database for export.
+///
+/// This function retrieves file records in chunks to avoid loading
+/// all data into memory at once. It orders by allocated size in descending order.
+///
+/// # Arguments
+///
+/// * `state` - The application state containing database connection
+/// * `scan_id` - The UUID of the scan to export
+/// * `limit` - Maximum number of records to fetch
+///
+/// # Returns
+///
+/// A vector of `FileExport` records containing file information
 async fn fetch_files_export(state: &AppState, scan_id: Uuid, limit: i64) -> Result<Vec<FileExport>, sqlx::Error> {
     let mut results = Vec::new();
     let mut offset: i64 = 0;

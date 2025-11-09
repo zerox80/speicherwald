@@ -1,3 +1,27 @@
+//! File and directory path management API endpoints.
+//!
+//! This module provides HTTP endpoints for moving and copying files and directories.
+//! It handles both simple renames (within the same filesystem) and cross-filesystem
+//! operations (copy-then-delete). The module includes comprehensive error handling,
+//! disk space checking, and rollback capabilities for failed operations.
+//!
+//! ## Features
+//!
+//! - **Move Operations**: Rename files/directories within the same filesystem
+//! - **Copy Operations**: Copy files/directories with optional source deletion
+//! - **Cross-filesystem Support**: Automatic fallback from rename to copy+delete
+//! - **Disk Space Checking**: Pre-operation validation to prevent out-of-space errors
+//! - **Rollback Support**: Automatic cleanup of partial operations on failure
+//! - **Progress Tracking**: Detailed operation metrics and warnings
+//! - **Windows Specific**: Special handling for junctions and reparse points
+//!
+//! ## Security Considerations
+//!
+//! - All paths are validated against traversal attempts
+//! - Operations are rate-limited per endpoint
+//! - Sensitive operations are logged for audit trails
+//! - Source/destination relationships are validated
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -26,10 +50,18 @@ use crate::{
     types::{MovePathRequest, MovePathResponse},
 };
 
+/// Result of a move/copy operation.
+///
+/// This structure captures the outcome of file or directory operations,
+/// including metrics about data transferred and any warnings encountered.
 struct MoveOutcome {
+    /// Total bytes that needed to be transferred
     bytes_to_transfer: u64,
+    /// Actual bytes that were successfully moved/copied
     bytes_moved: u64,
+    /// Bytes freed from source (only for move operations)
     freed_bytes: u64,
+    /// Collection of warnings encountered during operation
     warnings: Vec<String>,
 }
 

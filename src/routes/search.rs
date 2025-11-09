@@ -1,3 +1,34 @@
+//! Search functionality for scan results.
+//!
+//! This module provides HTTP endpoints for searching within scan results using
+//! various criteria including text patterns, file size ranges, and file types.
+//! It supports both file and directory searches with comprehensive filtering
+//! and pagination capabilities.
+//!
+//! ## Features
+//!
+//! - **Full-text Search**: Search file and directory names using SQL LIKE patterns
+//! - **Size Filtering**: Filter results by minimum and/or maximum file size
+//! - **Type Filtering**: Search by file extensions with validation
+//! - **Pagination**: Support for offset/limit pagination with bounds checking
+//! - **Security**: Sanitized inputs to prevent SQL injection and attacks
+//! - **Performance**: Efficient UNION queries with parameterized statements
+//!
+//! ## Search Capabilities
+//!
+//! - **Pattern Matching**: Use `%` as wildcard in search terms
+//! - **Size Ranges**: Specify min_size and/or max_size filters
+//! - **File Types**: Filter by extensions (e.g., "pdf", "jpg", "txt")
+//! - **Result Types**: Control inclusion of files vs directories
+//! - **Sorting**: Results sorted by allocated size (largest first)
+//!
+//! ## Security Considerations
+//!
+//! - All search terms are sanitized to prevent SQL injection
+//! - File extensions are validated for safe characters only
+//! - Query complexity is bounded to prevent resource exhaustion
+//! - Rate limiting applied per endpoint
+
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
@@ -94,8 +125,25 @@ pub enum SearchItem {
     },
 }
 
+/// Escape character used for SQL LIKE patterns.
+///
+/// This character is used to escape special SQL LIKE wildcards (% and _) to
+/// enable literal searching for these characters.
 const LIKE_ESCAPE: char = '!';
 
+/// Escapes a string for safe use in SQL LIKE patterns.
+///
+/// This function escapes special SQL LIKE characters (% and _) by prefixing them
+/// with the escape character to enable literal searching. This prevents SQL
+/// injection while allowing users to search for these special characters.
+///
+/// # Arguments
+///
+/// * `value` - The string to escape
+///
+/// # Returns
+///
+/// An escaped string safe for use in SQL LIKE patterns
 fn escape_like_pattern(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -107,6 +155,30 @@ fn escape_like_pattern(value: &str) -> String {
     out
 }
 
+/// Sanitizes and validates a search query term.
+///
+/// This function performs comprehensive validation and sanitization of search terms
+/// to prevent security issues and ensure reasonable query constraints.
+///
+/// # Validation Rules
+///
+/// - Empty queries are rejected
+/// - Maximum length of 500 characters
+/// - Control characters are removed (except whitespace)
+/// - Queries must contain at least one non-special character after sanitization
+///
+/// # Arguments
+///
+/// * `raw` - The raw search query from the user
+///
+/// # Returns
+///
+/// A sanitized search query string, or an error if validation fails
+///
+/// # Errors
+///
+/// Returns `AppError::InvalidInput` if the query is empty, too long, or
+/// contains only special characters after sanitization
 fn sanitize_search_term(raw: &str) -> Result<String, AppError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -120,6 +192,14 @@ fn sanitize_search_term(raw: &str) -> Result<String, AppError> {
         return Err(AppError::InvalidInput("Search query contains only special characters".to_string()));
     }
     Ok(sanitized)
+}
+
+/// Default limit for search results.
+///
+/// This function returns the default number of search results (100) when no
+/// explicit limit is provided by the client.
+fn default_limit() -> i64 {
+    100
 }
 
 /// Searches for files and directories within a scan.

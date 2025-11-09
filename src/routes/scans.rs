@@ -1,3 +1,38 @@
+//! Scan management and exploration API endpoints.
+//!
+//! This module provides comprehensive HTTP endpoints for creating, managing, and exploring
+//! file system scans. It supports real-time event streaming, hierarchical tree
+//! navigation, and various query operations for scan results.
+//!
+//! ## Core Features
+//!
+//! - **Scan Creation**: Initiate background scans with configurable options
+//! - **Real-time Events**: Server-Sent Events (SSE) for live scan progress
+//! - **Tree Navigation**: Hierarchical directory tree exploration
+//! - **Flexible Queries**: Search, sort, paginate, and filter scan results
+//! - **Statistics**: Detailed scan metrics and summary information
+//! - **Top Items**: Find largest files and directories
+//! - **Recent Items**: Discover recently accessed content
+//!
+//! ## API Endpoints
+//!
+//! - `POST /scans` - Create new scan
+//! - `GET /scans` - List all scans
+//! - `GET /scans/{id}` - Get scan details
+//! - `DELETE /scans/{id}` - Cancel/delete scan
+//! - `GET /scans/{id}/events` - Stream real-time scan events
+//! - `GET /scans/{id}/tree` - Get hierarchical directory tree
+//! - `GET /scans/{id}/top` - Get largest items
+//! - `GET /scans/{id}/recent` - Get recently accessed items
+//! - `GET /scans/{id}/list` - List directory contents
+//!
+//! ## Security Considerations
+//!
+//! - All paths are validated against traversal attacks
+//! - Scan operations are rate-limited per endpoint
+//! - Database operations use transactions for consistency
+//! - Large result sets are paginated to prevent resource exhaustion
+
 use std::{path::{Path as StdPath, PathBuf}, time::Duration};
 
 use axum::response::sse::{Event, Sse};

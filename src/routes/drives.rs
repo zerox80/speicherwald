@@ -1,3 +1,16 @@
+//! Drive management and enumeration API endpoints.
+//!
+//! This module provides HTTP endpoints for discovering and retrieving information
+//! about storage drives available to the system. The implementation is platform-specific,
+//! with full functionality on Windows and a fallback implementation for other platforms.
+//!
+//! ## Features
+//!
+//! - **Windows**: Full drive enumeration with type detection and space information
+//! - **Network Drives**: Timeout-protected network drive queries
+//! - **Cross-platform**: Graceful fallback on non-Windows systems
+//! - **Rate Limiting**: Per-endpoint rate limiting to prevent abuse
+
 use axum::{
     extract::State,
     http::HeaderMap,
@@ -9,8 +22,13 @@ use serde::Serialize;
 use crate::state::AppState;
 use crate::{middleware::ip::{extract_ip_from_headers, MaybeRemoteAddr}, types::DriveInfo};
 
+/// Response structure for the drives listing endpoint.
+///
+/// This wrapper structure provides a consistent response format
+/// for the drives API endpoint.
 #[derive(Serialize)]
 struct DrivesResponse {
+    /// List of available drives with their metadata
     items: Vec<DriveInfo>,
 }
 

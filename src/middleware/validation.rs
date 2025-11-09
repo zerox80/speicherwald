@@ -9,7 +9,22 @@ use axum::{
 use serde_json::json;
 use uuid::Uuid;
 
-/// Validates incoming requests for common security issues
+/// An Axum middleware that validates incoming requests for common security issues.
+///
+/// This middleware checks for:
+/// - Path traversal attempts in the request URI.
+/// - Suspicious user agents.
+/// - Excessive content length.
+///
+/// # Arguments
+///
+/// * `req` - The incoming `Request`.
+/// * `next` - The next middleware in the chain.
+///
+/// # Returns
+///
+/// * `Response` - The response from the next middleware, or a `400 Bad Request`
+///   or `413 Payload Too Large` response if a validation check fails.
 pub async fn validate_request_middleware(req: Request, next: Next) -> Response {
     // Check for path traversal attempts in URL
     let uri_path = req.uri().path();
@@ -126,7 +141,16 @@ fn is_suspicious_user_agent(ua: &str) -> bool {
         || ua_lower.contains("acunetix")
 }
 
-/// Validate UUID format
+/// Validates the format of a UUID string.
+///
+/// # Arguments
+///
+/// * `id` - The UUID string to validate.
+///
+/// # Returns
+///
+/// * `Result<Uuid, (StatusCode, Json<serde_json::Value>)>` - The parsed `Uuid` on success,
+///   or a `400 Bad Request` response on failure.
 pub fn validate_uuid(id: &str) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
     Uuid::parse_str(id).map_err(|_| {
         (
@@ -142,7 +166,23 @@ pub fn validate_uuid(id: &str) -> Result<Uuid, (StatusCode, Json<serde_json::Val
     })
 }
 
-/// Validate and sanitize file paths
+/// Validates and sanitizes a file path.
+///
+/// This function checks for:
+/// - Empty paths.
+/// - Null bytes.
+/// - Path traversal attempts.
+/// - Excessive path length.
+/// - Invalid characters on Windows.
+///
+/// # Arguments
+///
+/// * `path` - The file path to validate.
+///
+/// # Returns
+///
+/// * `Result<String, (StatusCode, Json<serde_json::Value>)>` - The validated path on success,
+///   or a `400 Bad Request` response on failure.
 pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -261,7 +301,17 @@ pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_
     Ok(path.to_string())
 }
 
-/// Validate scan options
+/// Validates the scan options provided by the user.
+///
+/// # Arguments
+///
+/// * `max_depth` - The maximum scan depth.
+/// * `concurrency` - The number of concurrent scanner threads.
+///
+/// # Returns
+///
+/// * `Result<(), (StatusCode, Json<serde_json::Value>)>` - `Ok(())` on success,
+///   or a `400 Bad Request` response on failure.
 pub fn validate_scan_options(
     max_depth: Option<u32>,
     concurrency: Option<usize>,
@@ -304,7 +354,18 @@ pub fn validate_scan_options(
     Ok(())
 }
 
-/// Sanitize user input for logging (removes control chars, limits length, escapes special chars)
+/// Sanitizes user input for logging purposes.
+///
+/// This function removes control characters, limits the length of the string,
+/// and escapes special characters.
+///
+/// # Arguments
+///
+/// * `input` - The string to sanitize.
+///
+/// # Returns
+///
+/// * `String` - The sanitized string.
 pub fn sanitize_for_logging(input: &str) -> String {
     // Remove control characters (except whitespace), escape quotes, and limit length
     input

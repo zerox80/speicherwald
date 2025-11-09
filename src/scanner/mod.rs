@@ -18,28 +18,47 @@ use uuid::Uuid;
 
 use crate::types::{ScanEvent, ScanOptions};
 
+/// A summary of the results of a scan.
 #[derive(Debug, Default, Clone)]
 pub struct ScanResultSummary {
+    /// The total number of directories scanned.
     pub total_dirs: u64,
+    /// The total number of files scanned.
     pub total_files: u64,
+    /// The total logical size of all files scanned.
     pub total_logical_size: u64,
+    /// The total allocated size of all files scanned.
     pub total_allocated_size: u64,
+    /// The number of warnings generated during the scan.
     pub warnings: u64,
+    /// The most recent modification time of any file or directory scanned.
     pub latest_mtime: Option<i64>,
+    /// The most recent access time of any file or directory scanned.
     pub latest_atime: Option<i64>,
 }
 
+/// A record of a scanned node (file or directory).
 #[derive(Debug, Clone)]
 pub struct NodeRecord {
+    /// The path of the node.
     pub path: String,
+    /// The parent path of the node.
     pub parent_path: Option<String>,
+    /// The depth of the node in the directory tree.
     pub depth: u32,
+    /// Whether the node is a directory.
     pub is_dir: bool,
+    /// The logical size of the node in bytes.
     pub logical_size: u64,
+    /// The allocated size of the node in bytes.
     pub allocated_size: u64,
+    /// The number of files in the node.
     pub file_count: u64,
+    /// The number of subdirectories in the node.
     pub dir_count: u64,
+    /// The modification time of the node.
     pub mtime: Option<i64>,
+    /// The access time of the node.
     pub atime: Option<i64>,
 }
 
@@ -66,6 +85,30 @@ fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     }
 }
 
+/// Runs a directory scan and persists the results to the database.
+///
+/// This is the main entry point for the scanning process. It spawgns a pool of
+/// worker threads to traverse the directory tree and collect file and directory
+/// information. The results are then collected and inserted into the database in
+/// batches.
+///
+/// # Arguments
+///
+/// * `pool` - The database connection pool.
+/// * `id` - The ID of the scan.
+/// * `root_paths` - The root paths to scan.
+/// * `options` - The scan options.
+/// * `tx` - A broadcast sender for sending scan events.
+/// * `cancel` - A cancellation token for stopping the scan.
+/// * `batch_size` - The number of records to insert in a single database transaction.
+/// * `flush_threshold` - The number of pending records that triggers a flush to the database.
+/// * `flush_interval_ms` - The interval in milliseconds at which to flush pending records.
+/// * `handle_limit` - The maximum number of open file handles.
+/// * `dir_concurrency` - The number of concurrent directory traversers.
+///
+/// # Returns
+///
+/// * `anyhow::Result<ScanResultSummary>` - The summary of the scan results.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_scan(
     pool: sqlx::SqlitePool,

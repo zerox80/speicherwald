@@ -13,10 +13,14 @@ use crate::{
     state::AppState,
 };
 
+/// Query parameters for the export endpoint.
 #[derive(Debug, Deserialize)]
 pub struct ExportQuery {
+    /// The export format (e.g., "csv", "json").
     pub format: String,        // csv or json
+    /// The scope of the export (e.g., "nodes", "files", "all").
     pub scope: Option<String>, // nodes, files, or all
+    /// The maximum number of records to export.
     pub limit: Option<i64>,
 }
 
@@ -34,35 +38,66 @@ fn format_node_csv(node: &NodeExport) -> String {
     )
 }
 
+/// The structure of the JSON export.
 #[derive(Debug, Serialize)]
 pub struct ExportData {
+    /// The ID of the scan being exported.
     pub scan_id: String,
+    /// The timestamp of the export.
     pub exported_at: String,
+    /// The export format.
     pub format: String,
+    /// The exported nodes.
     pub nodes: Option<Vec<NodeExport>>,
+    /// The exported files.
     pub files: Option<Vec<FileExport>>,
 }
 
+/// A node (directory) record for export.
 #[derive(Debug, Serialize)]
 pub struct NodeExport {
+    /// The path of the node.
     pub path: String,
+    /// The parent path of the node.
     pub parent_path: Option<String>,
+    /// The depth of the node in the directory tree.
     pub depth: i64,
+    /// Whether the node is a directory.
     pub is_dir: bool,
+    /// The logical size of the node in bytes.
     pub logical_size: i64,
+    /// The allocated size of the node in bytes.
     pub allocated_size: i64,
+    /// The number of files in the node.
     pub file_count: i64,
+    /// The number of subdirectories in the node.
     pub dir_count: i64,
 }
 
+/// A file record for export.
 #[derive(Debug, Serialize)]
 pub struct FileExport {
+    /// The path of the file.
     pub path: String,
+    /// The parent path of the file.
     pub parent_path: Option<String>,
+    /// The logical size of the file in bytes.
     pub logical_size: i64,
+    /// The allocated size of the file in bytes.
     pub allocated_size: i64,
 }
 
+/// Exports the data of a scan in either CSV or JSON format.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan to export.
+/// * `query` - The export query parameters.
+///
+/// # Returns
+///
+/// * `AppResult<Response>` - The exported data as a file download.
 pub async fn export_scan(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -276,7 +311,16 @@ async fn fetch_files_export(state: &AppState, scan_id: Uuid, limit: i64) -> Resu
     Ok(results)
 }
 
-// Statistics Export
+/// Exports summary statistics for a scan.
+///
+/// # Arguments
+///
+/// * `state` - The application state.
+/// * `id` - The ID of the scan.
+///
+/// # Returns
+///
+/// * `AppResult<impl IntoResponse>` - A JSON response containing the scan statistics.
 pub async fn export_statistics(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

@@ -1,4 +1,8 @@
-// FIX Bug #30: Add CSRF protection for state-changing endpoints
+//! Cross-Site Request Forgery (CSRF) protection middleware.
+//!
+//! This module provides CSRF protection for state-changing HTTP operations to prevent
+//! unauthorized requests from malicious websites. The current implementation uses a
+//! simple static token approach suitable for trusted web UI clients.
 
 use axum::{
     extract::Request,
@@ -12,13 +16,29 @@ use serde_json::json;
 const CSRF_HEADER: &str = "X-CSRF-Token";
 const CSRF_EXPECTED_VALUE: &str = "speicherwald-api-request";
 
-/// CSRF protection middleware for state-changing operations
+/// CSRF protection middleware for state-changing operations.
+/// 
+/// This middleware validates CSRF tokens for HTTP methods that modify state
+/// (POST, PUT, DELETE, PATCH) to prevent Cross-Site Request Forgery attacks.
+/// 
+/// # Security Note
 /// 
 /// This is a simplified CSRF protection suitable for APIs accessed by
 /// a trusted web UI. For production use with untrusted clients, consider:
 /// - Generating unique tokens per session
-/// - Token expiration
+/// - Token expiration and rotation
 /// - Cryptographic token validation
+/// - SameSite cookie attributes
+/// 
+/// # Arguments
+/// 
+/// * `req` - The incoming HTTP request
+/// * `next` - The next middleware in the chain
+/// 
+/// # Returns
+/// 
+/// A response that either continues the request chain or returns a 403 Forbidden
+/// status with error details if CSRF validation fails.
 pub async fn csrf_protection_middleware(req: Request, next: Next) -> Response {
     let method = req.method();
     
@@ -45,6 +65,15 @@ pub async fn csrf_protection_middleware(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
+/// Validates the CSRF token in the request headers.
+/// 
+/// # Arguments
+/// 
+/// * `headers` - The HTTP request headers to validate
+/// 
+/// # Returns
+/// 
+/// `true` if the CSRF token is present and valid, `false` otherwise.
 fn validate_csrf_token(headers: &HeaderMap) -> bool {
     headers
         .get(CSRF_HEADER)
@@ -58,6 +87,7 @@ mod tests {
     use super::*;
     use axum::http::header::HeaderValue;
 
+    /// Tests CSRF token validation with various scenarios.
     #[test]
     fn test_csrf_validation() {
         let mut headers = HeaderMap::new();

@@ -1,3 +1,9 @@
+//! Rate limiting middleware for HTTP requests.
+//!
+//! This module provides thread-safe rate limiting functionality using a sliding window
+//! algorithm. It supports both global rate limiting and per-endpoint rate limiting
+//! with configurable windows and request thresholds.
+
 // FIX Bug #20: Removed dead_code annotation
 use super::ip::extract_ip_from_headers;
 use axum::{
@@ -17,20 +23,31 @@ use std::{
 use tokio::sync::RwLock;
 
 /// A thread-safe rate limiter based on the sliding window algorithm.
+///
+/// This implementation tracks request timestamps per IP address and enforces
+/// limits within a configurable time window. It handles edge cases like
+/// system time skew and provides cleanup mechanisms to prevent memory leaks.
 #[derive(Clone)]
 pub struct RateLimiter {
+    /// Map of IP addresses to their request timestamps
     requests: Arc<RwLock<HashMap<IpAddr, Vec<Instant>>>>,
+    /// Maximum number of requests allowed per time window
     max_requests: usize,
+    /// Duration of the time window for rate limiting
     window: Duration,
 }
 
 impl RateLimiter {
-    /// Creates a new `RateLimiter`.
+    /// Creates a new `RateLimiter` with specified limits.
     ///
     /// # Arguments
     ///
-    /// * `max_requests` - The maximum number of requests allowed within the time window.
-    /// * `window_seconds` - The duration of the time window in seconds.
+    /// * `max_requests` - The maximum number of requests allowed within the time window
+    /// * `window_seconds` - The duration of the time window in seconds
+    ///
+    /// # Returns
+    ///
+    /// A new `RateLimiter` instance configured with the specified limits
     pub fn new(max_requests: usize, window_seconds: u64) -> Self {
         Self {
             requests: Arc::new(RwLock::new(HashMap::new())),
@@ -39,14 +56,21 @@ impl RateLimiter {
         }
     }
 
-    /// Checks if a request from a given IP address is allowed.
+    /// Checks if a request from a given IP address is allowed under rate limits.
     ///
-    /// If the request is allowed, it is recorded and `Ok(())` is returned.
-    /// If the request is rate-limited, an `Err` containing the HTTP response is returned.
+    /// This method implements the sliding window algorithm by:
+    /// 1. Removing timestamps outside the current time window
+    /// 2. Checking if the number of recent requests exceeds the limit
+    /// 3. Recording the current request timestamp if allowed
     ///
     /// # Arguments
     ///
-    /// * `ip` - The IP address of the client.
+    /// * `ip` - The IP address of the client making the request
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the request is allowed and has been recorded
+    /// * `Err((StatusCode, Json))` with HTTP 429 status and retry information if rate limited
     pub async fn check_rate_limit(&self, ip: IpAddr) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
         let now = Instant::now();
         let mut requests = self.requests.write().await;
@@ -90,10 +114,11 @@ impl RateLimiter {
         Ok(())
     }
 
-    /// Removes old entries from the rate limiter's storage.
+    /// Removes old entries from the rate limiter's storage to prevent memory leaks.
     ///
-    /// This function iterates through the stored IP addresses and removes timestamps
-    /// that are outside the time window.
+    /// This cleanup function removes timestamps outside the time window and removes
+    /// IP entries that have no recent requests. It should be called periodically
+    /// to maintain reasonable memory usage.
     pub async fn cleanup_old_entries(&self) {
         let now = Instant::now();
         let mut requests = self.requests.write().await;
@@ -108,18 +133,25 @@ impl RateLimiter {
 
 /// An Axum middleware for global rate limiting.
 ///
-/// This middleware uses a global `RateLimiter` instance to limit the number of
-/// requests per IP address.
+/// This middleware applies a global rate limit to all incoming requests using a
+/// shared `RateLimiter` instance. It extracts the client IP address from
+/// proxy headers or connection info and enforces limits configured via environment variables.
+///
+/// # Environment Variables
+///
+/// * `SPEICHERWALD_RATE_LIMIT_MAX_REQUESTS` - Maximum requests per window (default: 1000)
+/// * `SPEICHERWALD_RATE_LIMIT_WINDOW_SECONDS` - Time window in seconds (default: 60)
+/// * `SPEICHERWALD_GLOBAL_RATE_LIMIT_CLEANUP_INTERVAL` - Cleanup interval in seconds (default: 600)
 ///
 /// # Arguments
 ///
-/// * `req` - The incoming `Request`.
-/// * `next` - The next middleware in the chain.
+/// * `req` - The incoming HTTP request
+/// * `next` - The next middleware in the chain
 ///
 /// # Returns
 ///
 /// * `Response` - The response from the next middleware, or a `429 Too Many Requests`
-///  response if the client is rate-limited.
+///   response with retry information if the client is rate-limited
 pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
     // Extract IP address via shared helper
     let remote_ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|info| info.0.ip());
@@ -174,10 +206,12 @@ pub async fn rate_limit_middleware(req: Request, next: Next) -> Response {
 
 /// A manager for per-endpoint rate limiters.
 ///
-/// This struct holds a collection of `RateLimiter` instances, each associated with a
-/// specific endpoint.
+/// This struct maintains a collection of `RateLimiter` instances, each associated
+/// with a specific API endpoint. This allows different endpoints to have different
+/// rate limiting policies based on their resource requirements and usage patterns.
 #[derive(Clone)]
 pub struct EndpointRateLimiter {
+    /// Map of endpoint paths to their respective rate limiters
     limiters: Arc<RwLock<HashMap<String, RateLimiter>>>,
 }
 
@@ -189,6 +223,10 @@ impl Default for EndpointRateLimiter {
 
 impl EndpointRateLimiter {
     /// Creates a new, empty `EndpointRateLimiter`.
+    ///
+    /// # Returns
+    ///
+    /// A new `EndpointRateLimiter` with no configured limits
     pub fn new() -> Self {
         Self { limiters: Arc::new(RwLock::new(HashMap::new())) }
     }
@@ -196,12 +234,18 @@ impl EndpointRateLimiter {
     /// Configures the rate limiter with a set of endpoint-specific limits.
     ///
     /// This method extends the existing limits rather than replacing them. If an endpoint
-    /// already has a limit, it will be updated.
+    /// already has a limit, it will be updated with the new configuration.
     ///
     /// # Arguments
     ///
-    /// * `limits` - A vector of tuples, where each tuple contains the endpoint path,
-    ///   the maximum number of requests, and the time window in seconds.
+    /// * `limits` - A vector of tuples, where each tuple contains:
+    ///   - The endpoint path (e.g., "/scans", "/search")
+    ///   - The maximum number of requests allowed per time window
+    ///   - The time window duration in seconds
+    ///
+    /// # Returns
+    ///
+    /// A new `EndpointRateLimiter` instance with the configured limits
     pub fn with_limits(self, limits: Vec<(&str, usize, u64)>) -> Self {
         // Extract existing limiters or create new HashMap
         let mut limiters_map = match Arc::try_unwrap(self.limiters) {
@@ -226,8 +270,13 @@ impl EndpointRateLimiter {
     ///
     /// # Arguments
     ///
-    /// * `endpoint` - The path of the endpoint being accessed.
-    /// * `ip` - The IP address of the client.
+    /// * `endpoint` - The path of the endpoint being accessed (e.g., "/scans")
+    /// * `ip` - The IP address of the client making the request
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the request is allowed
+    /// * `Err((StatusCode, Json))` with HTTP 429 status if rate limited
     pub async fn check_endpoint_limit(
         &self,
         endpoint: &str,
@@ -244,6 +293,10 @@ impl EndpointRateLimiter {
     }
 
     /// Cleans up old entries from all endpoint-specific rate limiters.
+    ///
+    /// This function should be called periodically to prevent memory leaks from
+    /// accumulated request timestamps. It iterates through all configured limiters
+    /// and triggers their individual cleanup routines.
     pub async fn cleanup_all(&self) {
         // Clone out current limiters to avoid holding the read lock across awaits.
         let snapshot: Vec<RateLimiter> = {
@@ -258,9 +311,12 @@ impl EndpointRateLimiter {
 
 /// A background task that periodically cleans up old entries from a `RateLimiter`.
 ///
+/// This function runs in a loop, triggering cleanup at regular intervals to
+/// maintain reasonable memory usage by removing expired request timestamps.
+///
 /// # Arguments
 ///
-/// * `limiter` - The `RateLimiter` to clean up.
+/// * `limiter` - The `RateLimiter` to clean up
 pub async fn cleanup_task(limiter: RateLimiter) {
     let mut interval = tokio::time::interval(Duration::from_secs(300)); // Clean every 5 minutes
 

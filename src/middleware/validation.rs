@@ -1,3 +1,10 @@
+//! Request validation middleware for security and input sanitization.
+//!
+//! This module provides comprehensive validation middleware and utility functions to
+//! protect against common security vulnerabilities including path traversal attacks,
+//! injection attempts, and malformed requests. It includes validation for UUIDs,
+//! file paths, scan options, and user input sanitization.
+
 #![allow(dead_code)]
 use axum::{
     extract::Request,
@@ -11,20 +18,27 @@ use uuid::Uuid;
 
 /// An Axum middleware that validates incoming requests for common security issues.
 ///
-/// This middleware checks for:
-/// - Path traversal attempts in the request URI.
-/// - Suspicious user agents.
-/// - Excessive content length.
+/// This middleware provides early validation of HTTP requests to detect and block
+/// potential security threats before they reach application handlers.
+///
+/// # Security Checks Performed
+///
+/// - **Path Traversal Detection**: Identifies attempts to access files outside
+///   intended directories using patterns like `../`, encoded variants, and null bytes
+/// - **Suspicious User Agent Detection**: Flags known security scanners and malicious bots
+/// - **Content Length Validation**: Enforces maximum request body size to prevent
+///   denial of service attacks via large payloads
 ///
 /// # Arguments
 ///
-/// * `req` - The incoming `Request`.
-/// * `next` - The next middleware in the chain.
+/// * `req` - The incoming HTTP request to validate
+/// * `next` - The next middleware in the processing chain
 ///
 /// # Returns
 ///
-/// * `Response` - The response from the next middleware, or a `400 Bad Request`
-///   or `413 Payload Too Large` response if a validation check fails.
+/// * `Response` - The response from the next middleware if validation passes,
+///   or a `400 Bad Request`/`413 Payload Too Large` response with
+///   error details if validation fails
 pub async fn validate_request_middleware(req: Request, next: Next) -> Response {
     // Check for path traversal attempts in URL
     let uri_path = req.uri().path();
@@ -83,8 +97,18 @@ pub async fn validate_request_middleware(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-/// Check if a path contains traversal attempts (FIX Bugs #46, #47, #48)
-/// More comprehensive check for actual directory traversal patterns
+/// Check if a path contains traversal attempts (FIX Bugs #46, #47, #48).
+///
+/// More comprehensive check for actual directory traversal patterns including
+/// URL-encoded variants, null bytes, and common bypass attempts.
+///
+/// # Arguments
+///
+/// * `path` - The path string to check for traversal attempts
+///
+/// # Returns
+///
+/// `true` if path traversal is detected, `false` otherwise
 fn contains_path_traversal(path: &str) -> bool {
     // Check for actual path traversal sequences
     let lower = path.to_lowercase();
@@ -129,7 +153,18 @@ fn contains_path_traversal(path: &str) -> bool {
     path.contains('\0')
 }
 
-/// Check for suspicious user agents (simple heuristic)
+/// Check for suspicious user agents using simple heuristic patterns.
+///
+/// This function identifies common security scanning tools and malicious bots
+/// while allowing legitimate search engine crawlers.
+///
+/// # Arguments
+///
+/// * `ua` - The User-Agent header string to analyze
+///
+/// # Returns
+///
+/// `true` if the user agent appears suspicious, `false` otherwise
 fn is_suspicious_user_agent(ua: &str) -> bool {
     let ua_lower = ua.to_lowercase();
     // Only flag if it contains scanner OR if it contains crawler but NOT legitimate bots
@@ -145,12 +180,12 @@ fn is_suspicious_user_agent(ua: &str) -> bool {
 ///
 /// # Arguments
 ///
-/// * `id` - The UUID string to validate.
+/// * `id` - The UUID string to validate
 ///
 /// # Returns
 ///
 /// * `Result<Uuid, (StatusCode, Json<serde_json::Value>)>` - The parsed `Uuid` on success,
-///   or a `400 Bad Request` response on failure.
+///   or a `400 Bad Request` response with error details on failure
 pub fn validate_uuid(id: &str) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
     Uuid::parse_str(id).map_err(|_| {
         (
@@ -168,21 +203,21 @@ pub fn validate_uuid(id: &str) -> Result<Uuid, (StatusCode, Json<serde_json::Val
 
 /// Validates and sanitizes a file path.
 ///
-/// This function checks for:
-/// - Empty paths.
-/// - Null bytes.
-/// - Path traversal attempts.
-/// - Excessive path length.
-/// - Invalid characters on Windows.
+/// This function performs comprehensive validation of file paths including:
+/// - Empty path detection
+/// - Null byte detection  
+/// - Path traversal attempts
+/// - Excessive path length validation
+/// - Windows-specific character validation
 ///
 /// # Arguments
 ///
-/// * `path` - The file path to validate.
+/// * `path` - The file path to validate
 ///
 /// # Returns
 ///
 /// * `Result<String, (StatusCode, Json<serde_json::Value>)>` - The validated path on success,
-///   or a `400 Bad Request` response on failure.
+///   or a `400 Bad Request` response with specific error details on failure
 pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -305,13 +340,13 @@ pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_
 ///
 /// # Arguments
 ///
-/// * `max_depth` - The maximum scan depth.
-/// * `concurrency` - The number of concurrent scanner threads.
+/// * `max_depth` - The maximum scan depth to validate
+/// * `concurrency` - The number of concurrent scanner threads to validate
 ///
 /// # Returns
 ///
 /// * `Result<(), (StatusCode, Json<serde_json::Value>)>` - `Ok(())` on success,
-///   or a `400 Bad Request` response on failure.
+///   or a `400 Bad Request` response with specific validation error on failure
 pub fn validate_scan_options(
     max_depth: Option<u32>,
     concurrency: Option<usize>,
@@ -356,16 +391,18 @@ pub fn validate_scan_options(
 
 /// Sanitizes user input for logging purposes.
 ///
-/// This function removes control characters, limits the length of the string,
-/// and escapes special characters.
+/// This function processes user input to make it safe for logging by:
+/// - Removing control characters (except whitespace)
+/// - Limiting string length to prevent log flooding
+/// - Escaping special characters that could cause log injection
 ///
 /// # Arguments
 ///
-/// * `input` - The string to sanitize.
+/// * `input` - The string to sanitize
 ///
 /// # Returns
 ///
-/// * `String` - The sanitized string.
+/// * `String` - The sanitized string safe for logging
 pub fn sanitize_for_logging(input: &str) -> String {
     // Remove control characters (except whitespace), escape quotes, and limit length
     input

@@ -1,3 +1,9 @@
+//! Health check and monitoring endpoints.
+//!
+//! This module provides endpoints for monitoring application health, readiness,
+//! metrics collection, and version information. These endpoints are commonly
+//! used by orchestration systems, monitoring tools, and load balancers.
+
 use crate::state::AppState;
 use axum::{
     extract::State,
@@ -8,16 +14,32 @@ use axum::{
 
 /// A simple health check endpoint.
 ///
-/// This endpoint can be used to check if the application is running. It does not
-/// perform any external checks (e.g., database connectivity).
+/// This endpoint provides a basic liveness probe that indicates whether the
+/// application is running. It performs minimal checks and returns quickly,
+/// making it suitable for frequent health checks by load balancers and
+/// orchestration systems.
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - HTTP 200 OK with "ok" text if the application is running
 pub async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
 /// A readiness probe that checks for database connectivity.
 ///
-/// This endpoint is used to determine if the application is ready to handle requests.
-/// It performs a simple query to the database to ensure a connection can be established.
+/// This endpoint determines if the application is ready to handle requests
+/// by performing a simple database query. It includes a timeout to prevent
+/// hanging readiness checks that could cause deployment issues.
+///
+/// # Arguments
+///
+/// * `State(state)` - The application state containing the database connection
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - HTTP 200 OK with "ready" if database is accessible,
+///   HTTP 503 Service Unavailable with error details otherwise
 pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     // Add timeout to prevent hanging readiness checks
     let query = sqlx::query("SELECT 1").fetch_one(&state.db);
@@ -29,12 +51,35 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// Returns a JSON snapshot of the application's metrics.
+///
+/// This endpoint provides current application metrics in JSON format,
+/// including scan statistics, file processing counts, and system uptime.
+///
+/// # Arguments
+///
+/// * `State(state)` - The application state containing the metrics collector
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - JSON response containing current metrics snapshot
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let snapshot = state.metrics.get_snapshot();
     Json(snapshot)
 }
 
 /// Returns the application's metrics in Prometheus exposition format.
+///
+/// This endpoint provides metrics in the Prometheus text format, suitable for
+/// scraping by Prometheus servers or other monitoring systems that support
+/// the Prometheus exposition format.
+///
+/// # Arguments
+///
+/// * `State(state)` - The application state containing the metrics collector
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - Text response with metrics in Prometheus format
 pub async fn metrics_prometheus(State(state): State<AppState>) -> impl IntoResponse {
     let m = state.metrics.get_snapshot();
     let body = format!(
@@ -59,6 +104,14 @@ pub async fn metrics_prometheus(State(state): State<AppState>) -> impl IntoRespo
 }
 
 /// Returns the application's version and build information.
+///
+/// This endpoint provides detailed information about the application version,
+/// package metadata, and build configuration. Useful for debugging and
+/// version verification.
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - JSON response containing version and build information
 pub async fn version() -> impl IntoResponse {
     let body = serde_json::json!({
         "name": env!("CARGO_PKG_NAME"),

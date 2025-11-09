@@ -1,3 +1,10 @@
+//! Security headers middleware for HTTP responses.
+//!
+//! This module provides middleware that adds security-related HTTP headers to all responses
+//! to protect against common web vulnerabilities including XSS, clickjacking, and
+//! data injection attacks. It also handles appropriate caching policies for different
+//! content types.
+
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA};
 use axum::{
     extract::{Request, State},
@@ -10,7 +17,37 @@ use std::sync::Arc;
 use crate::config::AppConfig;
 
 /// Adds standard security-related HTTP headers to all responses.
-/// Conservative defaults chosen to avoid breaking the Web UI.
+///
+/// This middleware applies a comprehensive set of security headers to protect against
+/// common web vulnerabilities. Conservative defaults are chosen to avoid breaking
+/// the Web UI while still providing strong security protections.
+///
+/// # Security Headers Applied
+///
+/// - `X-Content-Type-Options: nosniff` - Prevents MIME-type sniffing
+/// - `X-Frame-Options: SAMEORIGIN` - Prevents clickjacking
+/// - `Referrer-Policy: no-referrer` - Controls referrer information leakage
+/// - `Permissions-Policy: geolocation=(), microphone=(), camera=()` - Disables sensitive APIs
+/// - `Cross-Origin-Opener-Policy: same-origin` - Controls cross-origin window opening
+/// - `Cross-Origin-Resource-Policy: same-origin` - Controls cross-origin resource access
+/// - Optional: `Strict-Transport-Security` (HSTS) via configuration
+/// - Optional: `Content-Security-Policy` (CSP) via configuration
+///
+/// # Caching Policies
+///
+/// - API responses (JSON): `no-store, no-cache` to prevent stale data
+/// - SSE streams: `no-store, no-cache` plus buffering hints for proxies
+/// - Static assets (CSS, JS, WASM): Long-term caching with `immutable` directive
+///
+/// # Arguments
+///
+/// * `State(cfg)` - The application configuration containing security settings
+/// * `req` - The incoming HTTP request
+/// * `next` - The next middleware in the chain
+///
+/// # Returns
+///
+/// The response with security headers and appropriate caching policies applied
 pub async fn security_headers_middleware(
     State(cfg): State<Arc<AppConfig>>,
     req: Request,

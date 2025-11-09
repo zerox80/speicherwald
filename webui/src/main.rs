@@ -1,3 +1,25 @@
+//! SpeicherWald Web UI - Main Application Entry Point
+//!
+//! This is the main frontend application built with Dioxus that provides a web interface
+//! for the SpeicherWald file system analysis tool. It handles scan management, real-time
+//! updates, data visualization, and user interactions.
+//!
+//! ## Main Features
+//!
+//! - **Scan Management**: Create, monitor, and manage file system scans
+//! - **Real-time Updates**: Live progress updates via Server-Sent Events
+//! - **Data Exploration**: Browse, search, and analyze scan results
+//! - **Interactive UI**: File operations, downloads, and data exports
+//! - **Responsive Design**: Works across different screen sizes
+//!
+//! ## Architecture
+//!
+//! - **Routing**: Simple two-page structure (Home and Scan details)
+//! - **State Management**: Uses Dioxus signals and local state
+//! - **API Integration**: Type-safe communication with backend
+//! - **Real-time**: SSE for live scan progress monitoring
+//! - **Error Handling**: User-friendly error messages and fallbacks
+
 use dioxus::events::FormData;
 use dioxus::prelude::*;
 
@@ -11,6 +33,10 @@ mod types;
 mod ui_utils;
 use ui_utils::{fmt_bytes, fmt_ago_short, copy_to_clipboard, download_csv, trigger_download, show_toast};
 
+/// State for the move/copy dialog functionality.
+///
+/// Manages the UI state and data for the file move/copy dialog,
+/// including source information, destination selection, and operation progress.
 #[derive(Debug, Clone, PartialEq)]
 struct MoveDialogState {
     source_path: String,
@@ -27,20 +53,34 @@ struct MoveDialogState {
     error: Option<String>,
 }
 
-// ----- Routing -----
+/// Application routing configuration.
+///
+/// Defines the available routes in the application using Dioxus Router.
+/// Currently supports a simple two-page structure with home and scan detail views.
 #[derive(Routable, Clone, Debug, PartialEq)]
 pub enum Route {
+    /// Home page - lists all scans and allows creating new scans
     #[route("/")]
     Home {},
+    /// Scan detail page - shows detailed information and exploration for a specific scan
     #[route("/scan/:id")]
     Scan { id: String },
 }
 
+/// Main entry point for the Dioxus web application.
+///
+/// Initializes panic hooks for better error reporting in development
+/// and launches the Dioxus application with the root `app` component.
 pub fn main() {
     console_error_panic_hook::set_once();
     dioxus_web::launch::launch(app, vec![], Default::default());
 }
 
+/// Root application component.
+///
+/// Renders the main application layout including the header,
+/// navigation, router for page content, and toast container
+/// for user notifications.
 fn app() -> Element {
     rsx! {
         div { // root wrapper

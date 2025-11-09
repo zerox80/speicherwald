@@ -1,5 +1,22 @@
+//! Type definitions for the SpeicherWald web UI.
+//!
+//! This module contains all the data structures used for communication
+//! between the frontend and backend API. These types mirror the backend
+//! data structures and provide serialization/deserialization support.
+//!
+//! ## Main Categories
+//!
+//! - **Scan Types**: Data structures for file system scans and results
+//! - **API Types**: Request/response types for backend communication
+//! - **UI Types**: Types used specifically for UI state management
+//! - **Event Types**: Server-sent events for real-time updates
+
 use serde::{Deserialize, Serialize};
 
+/// A summary representation of a file system scan.
+///
+/// This struct contains metadata about a completed or running scan,
+/// including timing information, statistics, and status.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ScanSummary {
     pub id: String,
@@ -13,9 +30,20 @@ pub struct ScanSummary {
     pub warning_count: i64,
 }
 
+/// Response containing a list of available drives.
+///
+/// This is the API response structure for the drives endpoint,
+/// containing information about storage devices available for scanning.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct DrivesResponse { pub items: Vec<DriveInfo> }
+pub struct DrivesResponse {
+    /// List of available drives/volumes
+    pub items: Vec<DriveInfo>
+}
 
+/// Information about a storage drive or volume.
+///
+/// Contains details about a drive's capacity, free space, and type,
+/// helping users make informed decisions about which drives to scan.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct DriveInfo {
     pub path: String,
@@ -24,9 +52,24 @@ pub struct DriveInfo {
     pub free_bytes: u64,
 }
 
+/// Response when creating a new scan.
+///
+/// Contains the ID and initial status of a newly created scan,
+/// allowing the frontend to track the scan's progress.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct CreateScanResp { pub id: String, pub status: String, pub started_at: String }
+pub struct CreateScanResp {
+    /// Unique identifier for the scan
+    pub id: String,
+    /// Initial status (typically "running")
+    pub status: String,
+    /// ISO timestamp when the scan was started
+    pub started_at: String
+}
 
+/// A node in the file system tree structure.
+///
+/// Represents either a file or directory in the scanned file system,
+/// with metadata about size, counts, and timestamps.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct NodeDto {
     pub path: String,
@@ -41,6 +84,10 @@ pub struct NodeDto {
     pub atime: Option<i64>,
 }
 
+/// An item in a "top items" list (largest files or directories).
+///
+/// Used for displaying the largest files or directories in a scan,
+/// helping users identify what's consuming the most space.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TopItem {
@@ -48,6 +95,10 @@ pub enum TopItem {
     File { path: String, parent_path: Option<String>, logical_size: i64, allocated_size: i64, mtime: Option<i64>, atime: Option<i64> },
 }
 
+/// An item in a directory listing.
+///
+/// Represents a file or directory when listing the contents of a directory,
+/// used for navigation and file browsing in the UI.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ListItem {
@@ -55,7 +106,10 @@ pub enum ListItem {
     File { name: String, path: String, parent_path: Option<String>, logical_size: i64, allocated_size: i64, mtime: Option<i64>, atime: Option<i64> },
 }
 
-// Search results
+/// Results from a file system search operation.
+///
+/// Contains the items matching a search query along with metadata
+/// about the search itself, including total count and query string.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct SearchResult {
     pub items: Vec<SearchItem>,
@@ -63,6 +117,10 @@ pub struct SearchResult {
     pub query: String,
 }
 
+/// An item that matches a search query.
+///
+/// Represents a file or directory that was found during a search operation,
+/// with relevant metadata for display and selection.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SearchItem {
@@ -84,7 +142,10 @@ pub enum SearchItem {
     },
 }
 
-// SSE events from backend
+/// Real-time events from a running scan.
+///
+/// These events are sent via Server-Sent Events (SSE) to provide
+/// live updates about scan progress, warnings, and completion status.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ScanEvent {
@@ -96,6 +157,10 @@ pub enum ScanEvent {
     Failed { message: String },
 }
 
+/// Request to move or copy a file or directory.
+///
+/// Used when users want to move files between directories or drives,
+/// with options for copy vs move and overwrite behavior.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct MovePathRequest {
     pub source: String,
@@ -106,6 +171,10 @@ pub struct MovePathRequest {
     pub overwrite: bool,
 }
 
+/// Response from a move/copy operation.
+///
+/// Contains detailed information about the result of a move or copy operation,
+/// including timing, data transferred, and any warnings that occurred.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct MovePathResponse {
     pub status: String,

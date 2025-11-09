@@ -1,10 +1,40 @@
+//! Utility functions for the SpeicherWald web UI.
+//!
+//! This module provides helper functions for formatting data, handling browser
+//! interactions, and managing UI elements like toasts and downloads.
+//!
+//! ## Categories
+//!
+//! - **Data Formatting**: Functions for displaying file sizes, timestamps, and durations
+//! - **Browser Integration**: Clipboard access, downloads, and DOM manipulation
+//! - **UI Feedback**: Toast notifications and user interaction feedback
+
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen::JsValue;
 use js_sys::Date;
 
-// Format bytes using binary units
+/// Formats a byte count into a human-readable string using binary units.
+///
+/// Converts bytes into appropriate units (B, KB, MB, GB, TB, PB) with
+/// automatic unit selection and proper decimal formatting.
+///
+/// # Arguments
+///
+/// * `n` - The number of bytes to format
+///
+/// # Returns
+///
+/// A human-readable string with appropriate binary unit
+///
+/// # Examples
+///
+/// ```
+/// fmt_bytes(1024)    // Returns "1 KB"
+/// fmt_bytes(1536)    // Returns "1.5 KB"
+/// fmt_bytes(1048576) // Returns "1 MB"
+/// ```
 pub fn fmt_bytes(n: i64) -> String {
     let mut v = n as f64;
     let units = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -20,8 +50,27 @@ pub fn fmt_bytes(n: i64) -> String {
     }
 }
 
-// Format a short relative time label: e.g. 3M (months), 2Y (years), 12D (days).
-// Accepts timestamps in various epoch units (seconds, ms, µs, ns). For sub-day differences show hours/minutes. If None, show "—".
+/// Formats a timestamp as a short relative time label.
+///
+/// Converts a timestamp into a concise relative time representation like "3M" (months),
+/// "2Y" (years), "12D" (days), "5H" (hours), or "15m" (minutes). Accepts timestamps
+/// in various epoch units and handles edge cases like invalid timestamps.
+///
+/// # Arguments
+///
+/// * `ts` - An optional Unix timestamp (may be in seconds, ms, µs, or ns)
+///
+/// # Returns
+///
+/// A short relative time string, or "—" if the timestamp is None or invalid
+///
+/// # Notes
+///
+/// - Automatically detects timestamp units (seconds, milliseconds, microseconds, nanoseconds)
+/// - Shows hours/minutes for differences less than a day
+/// - Uses days, months, and years for longer differences
+/// - Handles overflow and invalid timestamp values gracefully
+/// - Month calculation uses 30.44 days, year calculation uses 365.25 days (average values)
 pub fn fmt_ago_short(ts: Option<i64>) -> String {
     match ts {
         Some(secs) => {
@@ -97,7 +146,21 @@ pub fn fmt_ago_short(ts: Option<i64>) -> String {
 
 /// (removed duplicate trigger_download)
 
-// Copy text to clipboard and show a toast on success
+/// Copies text to the user's clipboard and shows a toast notification.
+///
+/// Attempts to copy the provided text to the system clipboard and displays
+/// a toast notification to inform the user of the operation result.
+///
+/// # Arguments
+///
+/// * `text` - The text to copy to the clipboard
+///
+/// # Notes
+///
+/// - Shows "In Zwischenablage kopiert" (Copied to clipboard) on success
+/// - Shows "Fehler beim Kopieren" (Copy error) on failure
+/// - Uses the modern Clipboard API with fallback support
+/// - Toast notification appears automatically after the operation
 pub fn copy_to_clipboard(text: String) {
     if let Some(win) = web_sys::window() {
         let nav = win.navigator();
@@ -112,7 +175,23 @@ pub fn copy_to_clipboard(text: String) {
     }
 }
 
-// Show a transient toast in the #toasts container
+/// Displays a transient toast notification.
+///
+/// Creates and displays a toast message in the #toasts container that
+/// automatically disappears after a short duration. Used for providing
+/// feedback to users about actions and events.
+///
+/// # Arguments
+///
+/// * `message` - The message text to display in the toast
+///
+/// # Notes
+///
+/// - Toast appears with a fade-in animation
+/// - Automatically removes itself after 1.6 seconds
+/// - Requires a #toasts container element in the DOM
+/// - Multiple toasts can be displayed simultaneously
+/// - Gracefully handles missing container element
 pub fn show_toast(message: &str) {
     if let Some(win) = web_sys::window() {
         if let Some(doc) = win.document() {
@@ -141,8 +220,26 @@ pub fn show_toast(message: &str) {
     }
 }
 
-// Format an optional UNIX timestamp (seconds) into a short local time string.
-// Output: "YYYY-MM-DD HH:MM" or "—" if None.
+/// Formats an optional UNIX timestamp as a local time string.
+///
+/// Converts a Unix timestamp into a formatted local time string in the format
+/// "YYYY-MM-DD HH:MM". Handles invalid timestamps and None values gracefully.
+///
+/// # Arguments
+///
+/// * `ts` - An optional Unix timestamp in seconds
+///
+/// # Returns
+///
+/// A formatted time string, or "—" if the timestamp is None or invalid
+///
+/// # Notes
+///
+/// - Output format: "YYYY-MM-DD HH:MM" (24-hour format)
+/// - Handles overflow and invalid timestamp values
+/// - Uses browser's local timezone for formatting
+/// - Maximum valid timestamp is year 9999 for overflow protection
+/// - Gracefully falls back for date conversion errors
 pub fn fmt_time_opt(ts: Option<i64>) -> String {
     match ts {
         Some(secs) => {
@@ -182,8 +279,23 @@ pub fn fmt_time_opt(ts: Option<i64>) -> String {
     }
 }
 
-// Trigger a download from a regular URL (server-provided content)
-/// If a suggested filename is provided, set the 'download' attribute to hint the browser.
+/// Triggers a browser download from a URL.
+///
+/// Creates a temporary anchor element and programmatically clicks it to
+/// initiate a file download from the specified URL. Can optionally suggest
+/// a filename for the downloaded file.
+///
+/// # Arguments
+///
+/// * `url` - The URL to download from
+/// * `suggested_filename` - An optional suggested filename for the download
+///
+/// # Notes
+///
+/// - Creates a temporary `<a>` element that is immediately removed after clicking
+/// - The `download` attribute hints the browser to use the suggested filename
+/// - Works with both same-origin and cross-origin URLs (subject to browser policies)
+/// - File will be downloaded according to browser's download behavior
 pub fn trigger_download(url: &str, suggested_filename: Option<&str>) {
     if let Some(win) = web_sys::window() {
         if let Some(doc) = win.document() {
@@ -204,7 +316,24 @@ pub fn trigger_download(url: &str, suggested_filename: Option<&str>) {
     }
 }
 
-// Trigger a CSV download using a data URI
+/// Triggers a CSV file download using a data URI.
+///
+/// Creates a data URI for the provided CSV content and triggers a download
+/// with the specified filename. Useful for generating client-side CSV files
+/// without server involvement.
+///
+/// # Arguments
+///
+/// * `filename` - The filename to suggest for the downloaded file
+/// * `content` - The CSV content to download
+///
+/// # Notes
+///
+/// - Uses a data URI with `text/csv;charset=utf-8` MIME type
+/// - Content is URL-encoded to handle special characters and newlines
+/// - Filename should include the .csv extension for proper browser handling
+/// - Generated entirely client-side, no server round-trip required
+/// - Works for CSV content of any reasonable size (browser limitations may apply)
 pub fn download_csv(filename: &str, content: &str) {
     if let Some(win) = web_sys::window() {
         if let Some(doc) = win.document() {

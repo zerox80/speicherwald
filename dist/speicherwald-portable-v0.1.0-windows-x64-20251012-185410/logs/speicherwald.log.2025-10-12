@@ -1,6 +1,0 @@
-2025-10-12T17:57:33.563494Z  INFO speicherwald: Creating SQLite database at sqlite:///C:/Users/rujbin1/AppData/Local/SpeicherWald/speicherwald.db
-2025-10-12T17:57:33.579679Z  INFO speicherwald: SpeicherWald listening on http://127.0.0.1:51769
-2025-10-12T17:58:33.262343Z  INFO speicherwald::routes::paths: Move request: 'C:\\ProgramData\\Lenovo\\UserGuide\\UserGuide_html' -> 'C:\\Users\\rujbin1\\Downloads' (remove_source=false, overwrite=false)
-2025-10-12T17:58:52.286202Z  INFO speicherwald::routes::paths: Move request: 'C:\\ProgramData\\Lenovo\\UserGuide\\UserGuide_html' -> 'C:\\Users\\rujbin1\\Downloads\\Lenovo' (remove_source=false, overwrite=false)
-2025-10-12T21:32:23.263938Z  INFO speicherwald: Creating SQLite database at sqlite:///C:/Users/rujbin1/AppData/Local/SpeicherWald/speicherwald.db
-2025-10-12T21:32:23.307436Z  INFO speicherwald: SpeicherWald listening on http://127.0.0.1:2461

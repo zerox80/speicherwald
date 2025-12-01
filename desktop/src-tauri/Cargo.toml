@@ -9,7 +9,7 @@ license = "GPL-3.0-or-later"
 tauri-build = { version = "1" }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
-ico = "0.4"
+ico = "0.5"
 
 [dependencies]
 tauri = { version = "1", features = ["shell-open"] }

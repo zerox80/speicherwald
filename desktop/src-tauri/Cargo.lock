@@ -1262,6 +1262,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ico"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e795dff5605e0f04bff85ca41b51a96b83e80b281e96231bcaaf1ac35103371"
+dependencies = [
+ "byteorder",
+ "png 0.17.16",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2712,7 +2722,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "ico",
+ "ico 0.5.0",
  "image 0.25.9",
  "serde",
  "serde_json",
@@ -2978,7 +2988,7 @@ checksum = "53438d78c4a037ffe5eafa19e447eea599bedfb10844cb08ec53c2471ac3ac3f"
 dependencies = [
  "base64 0.21.7",
  "brotli",
- "ico",
+ "ico 0.4.0",
  "json-patch",
  "plist",
  "png 0.17.16",

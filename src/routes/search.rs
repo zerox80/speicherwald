@@ -194,13 +194,6 @@ fn sanitize_search_term(raw: &str) -> Result<String, AppError> {
     Ok(sanitized)
 }
 
-/// Default limit for search results.
-///
-/// This function returns the default number of search results (100) when no
-/// explicit limit is provided by the client.
-fn default_limit() -> i64 {
-    100
-}
 
 /// Searches for files and directories within a scan.
 ///

@@ -104,6 +104,15 @@ input:focus, select:focus, textarea:focus {
 }
 
 /* Tables */
+.responsive-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1em 0;
+    background: #0f1117;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+}
+
 table {
     width: 100%;
     border-collapse: collapse;
@@ -116,6 +125,7 @@ th {
     text-align: left;
     padding: 12px;
     border-bottom: 2px solid var(--border-color);
+    white-space: nowrap;
 }
 
 td {
@@ -125,6 +135,23 @@ td {
 
 tr:hover {
     background: var(--bg-secondary);
+}
+
+@media (max-width: 768px) {
+    .hide-mobile {
+        display: none !important;
+    }
+    
+    .responsive-table th, .responsive-table td {
+        padding: 8px 4px;
+        font-size: 13px;
+    }
+    
+    /* Ensure action buttons don't overflow */
+    .btn {
+        padding: 4px 8px;
+        font-size: 12px;
+    }
 }
 
 /* Cards */

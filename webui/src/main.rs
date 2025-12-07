@@ -1273,7 +1273,7 @@ fn Scan(id: String) -> Element {
                 }) }
             }
             // Top-Tabelle
-            table { style: table_style(),
+            table { class: "responsive-table",
                 thead { tr {
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "type".to_string();
@@ -1283,7 +1283,7 @@ fn Scan(id: String) -> Element {
                         let mut top_order = top_order.clone();
                         if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
                     }, "Typ" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "modified".to_string();
                         let current_sort = top_sort.read().clone();
                         let current_order = top_order.read().clone();
@@ -1299,7 +1299,7 @@ fn Scan(id: String) -> Element {
                         let mut top_order = top_order.clone();
                         if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
                     }, "Allokiert" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                    th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "logical".to_string();
                         let current_sort = top_sort.read().clone();
                         let current_order = top_order.read().clone();
@@ -1354,9 +1354,9 @@ fn Scan(id: String) -> Element {
                                     let recent = mtime;
                                     rsx!{ tr {
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
+                                        td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                         td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
-                                        td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
+                                        td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
                                             let mut list_path = list_path.clone();
                                             list_path.set(Some(p_nav.clone())); 
@@ -1374,9 +1374,9 @@ fn Scan(id: String) -> Element {
                                     let recent = mtime;
                                     rsx!{ tr {
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
+                                        td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                         td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
-                                        td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
+                                        td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{path}" }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
                                             button { style: btn_style(), onclick: move |_| { copy_to_clipboard(path.clone()); }, "Kopieren" }
@@ -1391,7 +1391,7 @@ fn Scan(id: String) -> Element {
             // (removed recent panel UI)
             // Baum-Ergebnisse (Detail-Liste)  
             h3 { style: "margin-top:16px;", "Baum – Ergebnisse" }
-            table { style: table_style(),
+            table { class: "responsive-table",
                 thead { tr {
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "type".to_string();
@@ -1401,7 +1401,7 @@ fn Scan(id: String) -> Element {
                         let mut tree_order = tree_order.clone();
                         if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
                     }, "Typ" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "modified".to_string();
                         let current_sort = tree_sort_view.read().clone();
                         let current_order = tree_order.read().clone();
@@ -1417,7 +1417,7 @@ fn Scan(id: String) -> Element {
                         let mut tree_order = tree_order.clone();
                         if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
                     }, "Allokiert" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                    th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "logical".to_string();
                         let current_sort = tree_sort_view.read().clone();
                         let current_order = tree_order.read().clone();
@@ -1433,7 +1433,7 @@ fn Scan(id: String) -> Element {
                         let mut tree_order = tree_order.clone();
                         if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
                     }, "Pfad" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
+                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
                 } }
@@ -1472,9 +1472,9 @@ fn Scan(id: String) -> Element {
                             });
                         rsx!{ tr {
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
+                            td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
                             td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
-                            td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
+                            td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
                             td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
                                 let mut list_path = list_path.clone();
                                 list_path.set(Some(p_nav.clone())); 
@@ -1483,7 +1483,7 @@ fn Scan(id: String) -> Element {
                                 let mut nav_history = nav_history.clone();
                                 nav_history.set(hist);
                             }, "{p}" }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
+                            td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
                                 div { class: "bar-shell",
                                     div { class: "{bar_class}", style: "{bar_width}" }
                                 }
@@ -1812,7 +1812,7 @@ fn Scan(id: String) -> Element {
                     div { class: "alert alert-warning", "Keine Daten für Wurzeln – der Scan läuft eventuell noch oder die Root-Knoten wurden noch nicht gespeichert. Versuche es gleich erneut oder nutze Baum/Top." }
                 )) }
             }
-            table { style: table_style(),
+            table { class: "responsive-table",
                 thead { tr {
                     th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "name".to_string();
@@ -1834,7 +1834,7 @@ fn Scan(id: String) -> Element {
                         if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
                         list_offset.set(0);
                     }, "Typ" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "modified".to_string();
                         let current_sort = list_sort.read().clone();
                         let current_order = list_order.read().clone();
@@ -1854,7 +1854,7 @@ fn Scan(id: String) -> Element {
                         if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
                         list_offset.set(0);
                     }, "Allokiert" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                    th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                         let key = "logical".to_string();
                         let current_sort = list_sort.read().clone();
                         let current_order = list_order.read().clone();
@@ -1864,7 +1864,7 @@ fn Scan(id: String) -> Element {
                         if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
                         list_offset.set(0);
                     }, "Logisch" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
+                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
                 } }
                 tbody {
                     { 
@@ -1933,10 +1933,10 @@ fn Scan(id: String) -> Element {
                                         nav_history.set(hist);
                                     }, "{name}" }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
+                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                     td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
-                                    td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
+                                    td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
+                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
                                         div { class: "bar-shell", 
                                             div { class: "bar-fill-blue", style: "{bar_width}" }
                                         }
@@ -1981,10 +1981,10 @@ fn Scan(id: String) -> Element {
                                 rsx!{ tr {
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name}" }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
+                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                     td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
-                                    td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
+                                    td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
+                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
                                         div { class: "bar-shell", 
                                             div { class: "bar-fill-green", style: "{bar_width}" }
                                         }
@@ -2417,9 +2417,9 @@ fn btn_primary_style() -> &'static str {
     "background:#2563eb;color:#fff;border:none;border-radius:8px;padding:6px 10px;cursor:pointer;"
 }
 
-fn table_style() -> &'static str {
-    "width:100%;border-collapse:collapse;margin-top:8px;background:#0f1117;border:1px solid #222533;border-radius:8px;"
-}
+// fn table_style() -> &'static str {
+//     "width:100%;border-collapse:collapse;margin-top:8px;background:#0f1117;border:1px solid #222533;border-radius:8px;"
+// }
 
 // helper functions (fmt_bytes, copy_to_clipboard, show_toast, download_csv)
 // are imported from ui_utils module

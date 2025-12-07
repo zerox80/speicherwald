@@ -47,6 +47,14 @@ ehthumbs.db
 # Windows debug symbols (outside target)
 *.pdb
 
+# Distribution / Portable builds
+/dist/
+**/dist/
+
+# Log files
+*.log
+*.log.*
+
 # Local config/env (keep example files tracked)
 .env
 speicherwald.toml

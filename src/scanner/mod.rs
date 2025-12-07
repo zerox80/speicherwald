@@ -388,7 +388,7 @@ pub async fn run_scan(
                         // FIX Bug #11: Ensure proper cleanup even on panic
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             let mut ssum = ScanResultSummary::default();
-                            let mut last_sent_summary = ScanResultSummary::default();
+                            let last_sent_summary = ScanResultSummary::default();
                             let mut snodes: Vec<NodeRecord> = Vec::with_capacity(flush_thr);
                             let mut sfiles: Vec<FileRecord> = Vec::with_capacity(flush_thr);
                             let _ = scan_dir(

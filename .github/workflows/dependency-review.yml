@@ -75,7 +75,7 @@ jobs:
         run: cargo outdated --exit-code 1 --format json > outdated-webui.json || true
 
       - name: Upload outdated report
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: outdated-dependencies
           path: |

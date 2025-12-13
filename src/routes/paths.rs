@@ -243,7 +243,14 @@ fn perform_move(req: MovePathRequest, cancel: CancellationToken) -> AppResult<Mo
         return Err(AppError::BadRequest("source must refer to a file or directory".into()));
     };
 
-    let freed_bytes = if req.remove_source { bytes_to_transfer } else { 0 };
+    // FIX Bug #8: Correctly calculate freed bytes.
+    // If we fell back to copy and failed to remove source, we didn't free anything.
+    // Checking existence is the most reliable way given the function signature.
+    let freed_bytes = if req.remove_source && !source_path.exists() { 
+        bytes_to_transfer 
+    } else { 
+        0 
+    };
 
     Ok(MoveOutcome { bytes_to_transfer, bytes_moved, freed_bytes, warnings })
 }
@@ -416,7 +423,8 @@ fn copy_directory(
             }
         };
         if cancel.is_cancelled() {
-             if remove_source { rollback_partial(&created_files, &created_dirs); }
+             // FIX Bug #5: Always rollback partial copies on cancellation to prevent garbage
+             rollback_partial(&created_files, &created_dirs);
              return Err(AppError::Internal(anyhow!("Operation cancelled")));
         }
         let rel = match entry.path().strip_prefix(source) {

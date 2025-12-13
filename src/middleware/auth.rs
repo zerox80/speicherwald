@@ -12,12 +12,15 @@ use axum::{
 /// If the environment variable is not set, the middleware is a no-op (authentication disabled).
 pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, StatusCode> {
     // Check if auth is enabled via env var
-    // In a real app, this should be cached/loaded once in state, but for simplicity here we read env
-    // or rely on the OS caching it. Ideally, pass this via AppState.
-    // For this fix, we'll check the env var. If it's empty, we skip auth.
-    let expected_token = match std::env::var("SPEICHERWALD_AUTH_TOKEN") {
-        Ok(t) if !t.is_empty() => t,
-        _ => return Ok(next.run(req).await),
+    // FIX Bug #6: Cache the token lookup to avoid env var overhead on every request
+    static AUTH_TOKEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let expected_token_opt = AUTH_TOKEN.get_or_init(|| {
+        std::env::var("SPEICHERWALD_AUTH_TOKEN").ok().filter(|t| !t.is_empty())
+    });
+
+    let expected_token = match expected_token_opt {
+        Some(t) => t,
+        None => return Ok(next.run(req).await),
     };
 
     // Check header

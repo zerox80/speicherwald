@@ -72,11 +72,16 @@ pub async fn validate_request_middleware(req: Request, next: Next) -> Response {
             if let Ok(length_str) = content_length.to_str() {
                 if let Ok(length) = length_str.parse::<usize>() {
                     // Use configurable limit matching main.rs
-                    let max_body_size = std::env::var("SPEICHERWALD_MAX_BODY_SIZE")
-                        .ok()
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(10 * 1024 * 1024)
-                        .clamp(1024 * 1024, 50 * 1024 * 1024);
+                    // Use cached limit
+                    use std::sync::OnceLock;
+                    static MAX_BODY_SIZE: OnceLock<usize> = OnceLock::new();
+                    let max_body_size = *MAX_BODY_SIZE.get_or_init(|| {
+                        std::env::var("SPEICHERWALD_MAX_BODY_SIZE")
+                            .ok()
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(10 * 1024 * 1024)
+                            .clamp(1024 * 1024, 50 * 1024 * 1024)
+                    });
                     if length > max_body_size {
                         return (
                             StatusCode::PAYLOAD_TOO_LARGE,

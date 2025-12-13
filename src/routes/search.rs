@@ -370,22 +370,24 @@ pub async fn search_scan(
             });
         } else {
             // Extract file extension properly with better validation (FIX Bug #4)
-            let extension = path.rsplit_once('.').and_then(|(_, ext)| {
-                // Validate extension:
-                // 1. Not empty
-                // 2. No path separators in extension
-                // 3. Reasonable length
-                // 4. Only alphanumeric characters
-                if !ext.is_empty()
-                    && !ext.contains(['\\', '/'])
-                    && ext.len() <= 15
-                    && ext.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-                {
-                    Some(ext.to_lowercase())
-                } else {
-                    None
-                }
-            });
+            let extension = std::path::Path::new(&path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .and_then(|ext| {
+                    // Validate extension:
+                    // 1. Not empty
+                    // 2. No path separators in extension (Path::extension handles this mostly, but good to double check)
+                    // 3. Reasonable length
+                    // 4. Only alphanumeric characters
+                    if !ext.is_empty()
+                        && ext.len() <= 15
+                        && ext.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                    {
+                        Some(ext.to_lowercase())
+                    } else {
+                        None
+                    }
+                });
             items.push(SearchItem::File {
                 path,
                 name,

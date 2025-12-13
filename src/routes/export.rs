@@ -368,16 +368,17 @@ async fn export_json(
 ///
 /// A CSV-safe version of the input string
 fn escape_csv(s: &str) -> String {
-    // FIX Bug #55 - Proper CSV escaping: double quotes become two double quotes
-    // More efficient: do all replacements in one pass
-    s.chars()
-        .flat_map(|c| match c {
-            '"' => vec!['"', '"'],            // Escape double quote as ""
-            '\n' | '\r' => vec![' '],         // Replace newlines with space
-            c if c.is_control() => vec![' '], // Replace other control chars
-            c => vec![c],
-        })
-        .collect()
+    // FIX Bug #7 - Optimization: Avoid excessive allocations from flat_map/vec!
+    let mut out = String::with_capacity(s.len() + 10);
+    for c in s.chars() {
+        match c {
+            '"' => { out.push('"'); out.push('"'); },
+            '\n' | '\r' => out.push(' '),
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Chunk size for database export queries.

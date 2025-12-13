@@ -99,9 +99,14 @@ pub async fn list_drives(
     // 2. Query space info with bounded concurrency (async)
     // FIX Bug #5: Use buffer_unordered to limit concurrent threads
     use futures::stream::{self, StreamExt};
+
+    // Global semaphore to prevent thread exhaustion across multiple requests
+    static DRIVE_CHECK_LIMIT: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    let sem = DRIVE_CHECK_LIMIT.get_or_init(|| tokio::sync::Semaphore::new(32));
     
     let items = stream::iter(drive_candidates)
         .map(|(path, drive_type, is_network)| async move {
+            let _permit = sem.acquire().await; // Global limit
             let path_clone = path.clone();
             let space_info = if is_network {
                 // Network drive: with timeout

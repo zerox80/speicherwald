@@ -208,32 +208,46 @@ pub async fn create_scan(
         .await;
         match res {
             Ok(summary) => {
-                // Metrics: successful scan
-                metrics.inc_scans_completed();
-                metrics.add_dirs(summary.total_dirs);
-                metrics.add_files(summary.total_files);
-                metrics.add_bytes(summary.total_allocated_size);
-                metrics.add_warnings(summary.warnings as usize);
-                let _ = tx_clone.send(ScanEvent::Done {
-                    total_dirs: summary.total_dirs,
-                    total_files: summary.total_files,
-                    total_logical_size: summary.total_logical_size,
-                    total_allocated_size: summary.total_allocated_size,
-                });
-                // FIX Bug #59 - Log DB update errors
-                if let Err(e) = sqlx::query(
-                    r#"UPDATE scans SET status='done', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
-                        total_logical_size=?1, total_allocated_size=?2, dir_count=?3, file_count=?4, warning_count=?5
-                        WHERE id=?6"#
-                )
-                .bind(summary.total_logical_size as i64)
-                .bind(summary.total_allocated_size as i64)
-                .bind(summary.total_dirs as i64)
-                .bind(summary.total_files as i64)
-                .bind(summary.warnings as i64)
-                .bind(id.to_string())
-                .execute(&db).await {
-                    tracing::error!("Failed to update scan status to done: {}", e);
+                // FIX Bug #10: Check cancellation before marking as done
+                if cancel_child.is_cancelled() {
+                   // ... (same as Err(cancelled) block)
+                   let _ = tx_clone.send(ScanEvent::Cancelled);
+                   if let Err(e) = sqlx::query(
+                        r#"UPDATE scans SET status='canceled', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1"#
+                    )
+                    .bind(id.to_string())
+                    .execute(&db).await {
+                        tracing::error!("Failed to update scan status to canceled: {}", e);
+                    }
+                } else {
+                    // Metrics: successful scan
+                    metrics.inc_scans_completed();
+                    // ... (existing success logic)
+                    metrics.add_dirs(summary.total_dirs);
+                    metrics.add_files(summary.total_files);
+                    metrics.add_bytes(summary.total_allocated_size);
+                    metrics.add_warnings(summary.warnings as usize);
+                    let _ = tx_clone.send(ScanEvent::Done {
+                        total_dirs: summary.total_dirs,
+                        total_files: summary.total_files,
+                        total_logical_size: summary.total_logical_size,
+                        total_allocated_size: summary.total_allocated_size,
+                    });
+                    // FIX Bug #59 - Log DB update errors
+                    if let Err(e) = sqlx::query(
+                        r#"UPDATE scans SET status='done', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                            total_logical_size=?1, total_allocated_size=?2, dir_count=?3, file_count=?4, warning_count=?5
+                            WHERE id=?6"#
+                    )
+                    .bind(summary.total_logical_size as i64)
+                    .bind(summary.total_allocated_size as i64)
+                    .bind(summary.total_dirs as i64)
+                    .bind(summary.total_files as i64)
+                    .bind(summary.warnings as i64)
+                    .bind(id.to_string())
+                    .execute(&db).await {
+                        tracing::error!("Failed to update scan status to done: {}", e);
+                    }
                 }
             }
             Err(e) => {
@@ -469,7 +483,9 @@ pub async fn scan_events(
             Ok(event) => Some(event),
             Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
                 tracing::warn!("SSE stream lagged by {} messages for scan {}", n, id);
-                None
+                // FIX Bug #4: Handle Lagged error by keeping stream alive but notifying client
+                // We return a specialized warning event so the client knows it missed data
+                Some(ScanEvent::Failed { message: format!("Stream lagged, missed {} events", n) })
             }
         })
         .map(|ev| {

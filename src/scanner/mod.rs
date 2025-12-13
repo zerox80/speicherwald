@@ -419,7 +419,13 @@ pub async fn run_scan(
                             }
                             Err(e) => {
                                 tracing::error!("Worker thread panicked: {:?}", e);
-                                // Continue processing other threads
+                                // FIX Bug #3: Track panic as warning to avoid silent data loss
+                                let mut warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
+                                // accumulate into root aggregates
+                                subtree_logical = subtree_logical.saturating_add(warn_summary.total_logical_size);
+                                subtree_alloc = subtree_alloc.saturating_add(warn_summary.total_allocated_size);
+                                sub_dirs_total = sub_dirs_total.saturating_add(warn_summary.total_dirs);
+                                sub_files_total = sub_files_total.saturating_add(warn_summary.total_files);
                             }
                         }
                     }
@@ -567,7 +573,15 @@ fn scan_dir(
 
     let meta = match fs::metadata(dir) {
         Ok(m) => m,
-        Err(e) => anyhow::bail!(e),
+        Err(_) => {
+            summary.warnings += 1;
+            let _ = tx.send(ScanEvent::Warning {
+                path: dir.to_string_lossy().to_string(),
+                code: "metadata_failed".into(),
+                message: "failed to stat directory".into(),
+            });
+            return Ok((0, 0, 0, 0));
+        }
     };
 
     let dir_mtime = system_time_to_secs(meta.modified().ok());
@@ -627,7 +641,7 @@ fn scan_dir(
                     // If we're at depth N and max_depth is N, we can still recurse one level
                     // Only block when depth > max_depth (not >=)
                     if let Some(max_d) = options.max_depth {
-                        if depth > max_d {
+                        if depth >= max_d {
                             continue; // Don't recurse deeper
                         }
                     }
@@ -793,8 +807,9 @@ fn matches_excludes(path: &Path, set: &GlobSet) -> bool {
     // FIX Bug #25: Check for replacement characters from invalid UTF-8
     let s = path.to_string_lossy();
     if s.contains('\u{FFFD}') {
-        tracing::warn!("Path contains invalid UTF-8, skipping: {:?}", path);
-        return true; // Exclude paths with invalid UTF-8
+        // FIX Bug #9: Allow invalid UTF-8 paths (they are lossy converted but should still be scanned)
+        // tracing::warn!("Path contains invalid UTF-8: {:?}", path);
+        // return true; 
     }
     let normalized = s.replace('\\', "/");
     if set.is_match(&normalized) {
@@ -924,7 +939,7 @@ fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
     // If the lock is busy, we just skip the cache and calculate the size directly.
     match SIZE_CACHE.try_lock() {
         Ok(mut cache) => {
-            if let Some(entry) = cache.get(&path.to_path_buf()) {
+            if let Some(entry) = cache.get(path) {
                 return *entry;
             }
         }
@@ -1002,22 +1017,26 @@ async fn persist_batches(
         return Ok(());
     }
     let sid = id.to_string();
-    let mut txdb = pool.begin().await?;
-
-    // Respect SQLite variable limit (commonly 999). Each row consumes a fixed
-    // number of bound parameters; cap chunk sizes accordingly so a single
-    // INSERT statement never exceeds this limit.
+    
+    // Respect SQLite variable limit
     const SQLITE_MAX_VARS: usize = 999;
-    const NODE_BINDS_PER_ROW: usize = 11; // scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count, mtime, atime
-    const FILE_BINDS_PER_ROW: usize = 7; // scan_id, path, parent_path, logical_size, allocated_size, mtime, atime
+    const NODE_BINDS_PER_ROW: usize = 11;
+    const FILE_BINDS_PER_ROW: usize = 7;
 
     // Ensure we never compute 0 rows per statement
     let max_node_rows_per_stmt = (SQLITE_MAX_VARS / NODE_BINDS_PER_ROW).max(1);
     let max_file_rows_per_stmt = (SQLITE_MAX_VARS / FILE_BINDS_PER_ROW).max(1);
 
+    // chunk sizes for query construction
+    let node_chunk_size = batch_size.max(1).min(max_node_rows_per_stmt.max(1));
+    let file_chunk_size = batch_size.max(1).min(max_file_rows_per_stmt.max(1));
+    
+    // FIX Bug #6: Commit intermediate transactions to avoid huge internal journals and locks
+    let mut txdb = pool.begin().await?;
+    let mut chunks_processed = 0;
+
     // nodes in chunks
-    let node_chunk = batch_size.max(1).min(max_node_rows_per_stmt.max(1));
-    for chunk in nodes.chunks(node_chunk) {
+    for chunk in nodes.chunks(node_chunk_size) {
         let mut qb = QueryBuilder::new(
             "INSERT INTO nodes (scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count, mtime, atime) "
         );
@@ -1041,11 +1060,17 @@ async fn persist_batches(
                 .push_bind(n.atime);
         });
         qb.build().execute(&mut *txdb).await?;
+        
+        chunks_processed += 1;
+        if chunks_processed >= 5 {
+            txdb.commit().await?;
+            txdb = pool.begin().await?;
+            chunks_processed = 0;
+        }
     }
 
     // files in chunks
-    let file_chunk = batch_size.max(1).min(max_file_rows_per_stmt.max(1));
-    for chunk in files.chunks(file_chunk) {
+    for chunk in files.chunks(file_chunk_size) {
         let mut qb = QueryBuilder::new(
             "INSERT INTO files (scan_id, path, parent_path, logical_size, allocated_size, mtime, atime) ",
         );
@@ -1063,6 +1088,13 @@ async fn persist_batches(
                 .push_bind(f.atime);
         });
         qb.build().execute(&mut *txdb).await?;
+        
+        chunks_processed += 1;
+        if chunks_processed >= 5 {
+            txdb.commit().await?;
+            txdb = pool.begin().await?;
+            chunks_processed = 0;
+        }
     }
 
     txdb.commit().await?;

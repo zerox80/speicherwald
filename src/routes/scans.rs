@@ -171,6 +171,13 @@ pub async fn create_scan(
     .execute(&state.db)
     .await?;
 
+    // FIX Bug #2: Register job BEFORE spawning background task to avoid race condition
+    // where the task completes/cleans up before we insert the handle.
+    {
+        let mut jobs = state.jobs.write().await;
+        jobs.insert(id, JobHandle { cancel: cancel.clone(), sender: tx.clone() });
+    }
+
     // Spawn background task
     let db = state.db.clone();
     let tx_clone = tx.clone();
@@ -260,12 +267,6 @@ pub async fn create_scan(
             jobs.remove(&id);
         }
     });
-
-    // Register job
-    {
-        let mut jobs = state.jobs.write().await;
-        jobs.insert(id, JobHandle { cancel: cancel.clone(), sender: tx.clone() });
-    }
 
     // Signal started
     let _ = tx.send(ScanEvent::Started { root_paths: req.root_paths.clone() });
@@ -484,91 +485,11 @@ pub async fn scan_events(
 
 // Removed - inline usage is clearer and avoids potential timezone issues
 
-// FIX Bug #64 - Add missing helper functions
-async fn get_subtree_totals(
-    scan_id: Uuid,
-    root: &str,
-    db: &sqlx::SqlitePool,
-) -> Result<(i64, i64), sqlx::Error> {
-    if let Some(row) =
-        sqlx::query("SELECT file_count, dir_count FROM nodes WHERE scan_id = ?1 AND path = ?2 LIMIT 1")
-            .bind(scan_id.to_string())
-            .bind(root)
-            .fetch_optional(db)
-            .await?
-    {
-        let total_files: i64 = row.try_get("file_count").unwrap_or(0);
-        let total_dirs: i64 = row.try_get("dir_count").unwrap_or(0);
-        return Ok((total_files, total_dirs));
-    }
 
-    // Fallback: derive counts from persisted rows without double-counting directory aggregates.
-    let mut prefix = root.to_string();
-    if !prefix.ends_with('/') && !prefix.ends_with('\\') {
-        prefix.push(if prefix.contains('\\') { '\\' } else { '/' });
-    }
-    let escaped_prefix = escape_like_pattern(&prefix);
-    let pattern = format!("{}%", escaped_prefix);
 
-    let files_row = sqlx::query(
-        "SELECT COUNT(*) AS total_files \
-         FROM files \
-         WHERE scan_id = ?1 \
-           AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
-    )
-    .bind(scan_id.to_string())
-    .bind(root)
-    .bind(&pattern)
-    .fetch_one(db)
-    .await?;
 
-    let dirs_row = sqlx::query(
-        "SELECT COUNT(*) AS total_dirs \
-         FROM nodes \
-         WHERE scan_id = ?1 \
-           AND path LIKE ?2 ESCAPE '!' \
-           AND path <> ?3",
-    )
-    .bind(scan_id.to_string())
-    .bind(&pattern)
-    .bind(root)
-    .fetch_one(db)
-    .await?;
 
-    let total_files: i64 = files_row.try_get("total_files").unwrap_or(0);
-    let total_dirs: i64 = dirs_row.try_get("total_dirs").unwrap_or(0);
-    Ok((total_files, total_dirs))
-}
 
-// Async helper to fetch mtime (seconds since epoch) without blocking the Tokio runtime
-async fn get_mtime_secs(path: &str) -> Option<i64> {
-    let p = path.to_string();
-    tokio::task::spawn_blocking(move || {
-        std::fs::metadata(&p)
-            .and_then(|md| md.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-    })
-    .await
-    .ok()
-    .flatten()
-}
-
-// Async helper to fetch atime (seconds since epoch) without blocking the Tokio runtime
-async fn get_atime_secs(path: &str) -> Option<i64> {
-    let p = path.to_string();
-    tokio::task::spawn_blocking(move || {
-        std::fs::metadata(&p)
-            .and_then(|md| md.accessed())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-    })
-    .await
-    .ok()
-    .flatten()
-}
 
 const LIKE_ESCAPE: char = '!';
 const TREE_LIMIT_MAX: i64 = 5000;
@@ -725,10 +646,13 @@ pub async fn get_tree(
         // FIX Bug #8: Escape special characters to prevent SQL injection via path
         let pfx_escaped = escape_like_pattern(&pfx);
         let pfx_upper = format!("{}~", pfx_escaped);
+        // FIX Bug #3 (Unicode Query): Use LIKE instead of range optimization
+        // Range optimization (path >= pfx AND path < pfx_upper) is tricky with Unicode.
+        // SQLite's LIKE operator is safer and sufficient here given the index.
         qb.push(" AND (path = ").push_bind(peq.clone());
-        qb.push(" OR (path >= ").push_bind(pfx_escaped.clone());
-        qb.push(" AND path < ").push_bind(pfx_upper);
-        qb.push("))");
+        qb.push(" OR path LIKE ").push_bind(format!("{}%", pfx_escaped));
+        qb.push(" ESCAPE '!')"); // Ensure we use the escape character defined in helper
+        qb.push(")");
     }
     if let (Some(bd), Some(d)) = (base_depth, q.depth) {
         let max_depth = bd + d;

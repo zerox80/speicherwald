@@ -45,18 +45,25 @@ use std::net::{IpAddr, SocketAddr};
 /// assert_eq!(client_ip, IpAddr::V4(203, 0, 113, 1));
 /// ```
 pub fn extract_ip_from_headers(headers: &HeaderMap, fallback: Option<IpAddr>) -> IpAddr {
+    // FIX Bug #1: Prioritize X-Real-IP as it's often set by the immediate proxy
+    if let Some(h) = headers.get("x-real-ip").and_then(|hv| hv.to_str().ok()) {
+        if let Ok(ip) = h.trim().parse::<IpAddr>() {
+            return ip;
+        }
+    }
+
+    // FIX Bug #1: Use the LAST address in X-Forwarded-For (rightmost)
+    // The rightmost IP is the one added by the last proxy (our text), which is more trustworthy
+    // in a single reverse-proxy setup than the leftmost (which can be spoofed by the client).
+    // Note: In complex multi-proxy chains, this requires the last proxy to be trusted.
     if let Some(h) = headers.get("x-forwarded-for").and_then(|hv| hv.to_str().ok()) {
-        if let Some(first) = h.split(',').next() {
-            if let Ok(ip) = first.trim().parse::<IpAddr>() {
+        if let Some(last) = h.split(',').last() {
+            if let Ok(ip) = last.trim().parse::<IpAddr>() {
                 return ip;
             }
         }
     }
-    if let Some(h) = headers.get("x-real-ip").and_then(|hv| hv.to_str().ok()) {
-        if let Ok(ip) = h.parse::<IpAddr>() {
-            return ip;
-        }
-    }
+
     if let Some(ip) = fallback {
         return ip;
     }

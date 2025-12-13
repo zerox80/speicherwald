@@ -170,48 +170,132 @@ pub async fn export_scan(
 /// # Returns
 ///
 /// An HTTP response with CSV content and appropriate headers for file download
+/// Exports scan data in CSV format.
+///
+/// This function generates a CSV file containing scan results based on the specified scope.
+/// It includes proper headers and handles both nodes (directories) and files.
+///
+/// # Arguments
+///
+/// * `state` - The application state containing database connection
+/// * `scan_id` - The UUID of the scan to export
+/// * `scope` - The export scope: "nodes", "files", or "all"
+/// * `limit` - Maximum number of records to export
+///
+/// # Returns
+///
+/// An HTTP response with CSV content and appropriate headers for file download
 async fn export_csv(state: AppState, scan_id: Uuid, scope: &str, limit: i64) -> AppResult<impl IntoResponse> {
+    use axum::body::Body;
     use axum::http::HeaderValue;
-
-    const NODE_HEADER: &str =
-        "Type,Path,Parent Path,Depth,Is Directory,Logical Size,Allocated Size,File Count,Dir Count\n";
-    const FILE_HEADER: &str = "Type,Path,Parent Path,Logical Size,Allocated Size\n";
+    use futures::stream::TryStreamExt;
 
     let include_nodes = scope == "all" || scope == "nodes";
     let include_files = scope == "all" || scope == "files";
+    let scope_str = scope.to_string();
 
-    let mut csv_content = String::new();
+    // Initial state: (last_node_cursor, last_file_cursor, nodes_done, files_done, header_sent, exported_count)
+    let initial_state = (None::<String>, None::<(i64, String)>, false, false, false, 0i64);
 
-    if include_nodes {
-        csv_content.push_str(NODE_HEADER);
-        let nodes = fetch_nodes_export(&state, scan_id, limit).await?;
+    let stream = futures::stream::try_unfold(
+        initial_state,
+        move |(mut last_node_cursor, mut last_file_cursor, mut nodes_done, mut files_done, mut header_sent, mut count)| {
+            let state = state.clone();
+            let scope = scope_str.clone();
+            async move {
+                if nodes_done && files_done {
+                    return Ok(None);
+                }
+                
+                let remaining = limit - count;
+                if remaining <= 0 {
+                    return Ok(None); 
+                }
 
-        for node in nodes {
-            csv_content.push_str(&format_node_csv(&node));
-        }
-    }
+                let mut chunk = String::new();
 
-    if include_nodes && include_files && !csv_content.is_empty() {
-        csv_content.push('\n');
-    }
+                // 1. Send Headers if not sent
+                if !header_sent {
+                    header_sent = true;
+                }
 
-    if include_files {
-        csv_content.push_str(FILE_HEADER);
-        let files = fetch_files_export(&state, scan_id, limit).await?;
+                let batch_size = EXPORT_CHUNK_SIZE.min(remaining);
+                
+                // 2. Fetch Nodes
+                if include_nodes && !nodes_done {
+                    if count == 0 {
+                        chunk.push_str("Type,Path,Parent Path,Depth,Is Directory,Logical Size,Allocated Size,File Count,Dir Count\n");
+                    }
+                    
+                    if batch_size <= 0 {
+                        nodes_done = true;
+                    } else {
+                        let nodes = fetch_nodes_batch(&state, scan_id, batch_size, last_node_cursor.clone()).await.map_err(AppError::from)?;
+                        if nodes.is_empty() {
+                            nodes_done = true;
+                        } else {
+                            for node in &nodes {
+                                chunk.push_str(&format_node_csv(node));
+                            }
+                            if let Some(last) = nodes.last() {
+                                last_node_cursor = Some(last.path.clone());
+                            }
+                            count += nodes.len() as i64;
+                        }
+                    }
+                    
+                    if nodes_done {
+                        last_node_cursor = None; 
+                        if include_files {
+                            chunk.push('\n');
+                        }
+                    }
+                } 
+                // 3. Fetch Files
+                else if include_files && !files_done {
+                     if last_file_cursor.is_none() { 
+                         chunk.push_str("Type,Path,Parent Path,Logical Size,Allocated Size\n");
+                     }
+ 
+                     let remaining = limit - count;
+                     let batch_size = EXPORT_CHUNK_SIZE.min(remaining);
 
-        for file in files {
-            csv_content.push_str(&format!(
-                "File,\"{}\",\"{}\",{},{}\n",
-                escape_csv(&file.path),
-                escape_csv(file.parent_path.as_deref().unwrap_or("")),
-                file.logical_size,
-                file.allocated_size,
-            ));
-        }
-    }
+                     if batch_size <= 0 {
+                         files_done = true;
+                     } else {
+                         let files = fetch_files_batch(&state, scan_id, batch_size, last_file_cursor.clone()).await.map_err(AppError::from)?;
+                         if files.is_empty() {
+                             files_done = true;
+                         } else {
+                             for file in &files {
+                                 chunk.push_str(&format!(
+                                     "File,\"{}\",\"{}\",{},{}\n",
+                                     escape_csv(&file.path),
+                                     escape_csv(file.parent_path.as_deref().unwrap_or("")),
+                                     file.logical_size,
+                                     file.allocated_size,
+                                 ));
+                             }
+                             if let Some(last) = files.last() {
+                                 last_file_cursor = Some((last.allocated_size, last.path.clone()));
+                             }
+                             count += files.len() as i64;
+                         }
+                     }
+                } else {
+                    return Ok(None);
+                }
+                
+                Ok(Some((chunk, (last_node_cursor, last_file_cursor, nodes_done, files_done, header_sent, count))))
+            }
+        },
+    );
 
-    let mut response = csv_content.into_response();
-    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
+    let mut response = Response::builder()
+        .header(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"))
+        .body(Body::from_stream(stream))
+        .unwrap();
+
     let filename = format!("attachment; filename=\"scan_{}.csv\"", scan_id);
     if let Ok(header_val) = HeaderValue::from_str(&filename) {
         response.headers_mut().insert(header::CONTENT_DISPOSITION, header_val);
@@ -249,11 +333,11 @@ async fn export_json(
     };
 
     if scope == "all" || scope == "nodes" {
-        export_data.nodes = Some(fetch_nodes_export(&state, scan_id, limit).await?);
+        export_data.nodes = Some(fetch_nodes_all(&state, scan_id, limit).await?);
     }
 
     if scope == "all" || scope == "files" {
-        export_data.files = Some(fetch_files_export(&state, scan_id, limit).await?);
+        export_data.files = Some(fetch_files_all(&state, scan_id, limit).await?);
     }
 
     use axum::http::HeaderValue;
@@ -302,115 +386,148 @@ fn escape_csv(s: &str) -> String {
 /// to balance memory usage and performance.
 const EXPORT_CHUNK_SIZE: i64 = 800;
 
-/// Fetches node records from the database for export.
-///
-/// This function retrieves directory node records in chunks to avoid loading
-/// all data into memory at once. It orders by allocated size in descending order.
-///
-/// # Arguments
-///
-/// * `state` - The application state containing database connection
-/// * `scan_id` - The UUID of the scan to export
-/// * `limit` - Maximum number of records to fetch
-///
-/// # Returns
-///
-/// A vector of `NodeExport` records containing directory information
-async fn fetch_nodes_export(state: &AppState, scan_id: Uuid, limit: i64) -> Result<Vec<NodeExport>, sqlx::Error> {
+// Modified for streaming: just fetch one batch at the specific offset and return it.
+// The caller (stream) manages the offset loop.
+/// Fetches all nodes for JSON export (or non-streaming).
+async fn fetch_nodes_all(state: &AppState, scan_id: Uuid, limit: i64) -> Result<Vec<NodeExport>, sqlx::Error> {
     let mut results = Vec::new();
-    let mut offset: i64 = 0;
-    let sid = scan_id.to_string();
+    let mut current_cursor: Option<String> = None;
+    let mut count = 0;
+    loop {
+        let remaining = limit - count;
+        if remaining <= 0 { break; }
+        let batch_size = EXPORT_CHUNK_SIZE.min(remaining);
+        
+        let batch = fetch_nodes_batch(state, scan_id, batch_size, current_cursor.clone()).await?;
 
-    while offset < limit {
-        let batch = (limit - offset).min(EXPORT_CHUNK_SIZE);
-        let rows = sqlx::query(
-            "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count \
-             FROM nodes WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2 OFFSET ?3",
-        )
-        .bind(&sid)
-        .bind(batch)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await?;
-
-        if rows.is_empty() {
-            break;
+        if batch.is_empty() { break; }
+        
+        if let Some(last) = batch.last() {
+            current_cursor = Some(last.path.clone());
         }
 
-        for row in rows.iter() {
-            results.push(NodeExport {
-                path: row.get("path"),
-                parent_path: row.get("parent_path"),
-                depth: row.get("depth"),
-                is_dir: row.get::<i64, _>("is_dir") != 0,
-                logical_size: row.get("logical_size"),
-                allocated_size: row.get("allocated_size"),
-                file_count: row.get("file_count"),
-                dir_count: row.get("dir_count"),
-            });
-        }
-
-        let fetched = rows.len() as i64;
-        offset += fetched;
-        if fetched < batch {
-            break;
-        }
+        count += batch.len() as i64;
+        results.extend(batch);
     }
-
     Ok(results)
 }
 
-/// Fetches file records from the database for export.
-///
-/// This function retrieves file records in chunks to avoid loading
-/// all data into memory at once. It orders by allocated size in descending order.
-///
-/// # Arguments
-///
-/// * `state` - The application state containing database connection
-/// * `scan_id` - The UUID of the scan to export
-/// * `limit` - Maximum number of records to fetch
-///
-/// # Returns
-///
-/// A vector of `FileExport` records containing file information
-async fn fetch_files_export(state: &AppState, scan_id: Uuid, limit: i64) -> Result<Vec<FileExport>, sqlx::Error> {
-    let mut results = Vec::new();
-    let mut offset: i64 = 0;
+/// Fetches a single batch of nodes for export.
+async fn fetch_nodes_batch(
+    state: &AppState, 
+    scan_id: Uuid, 
+    limit: i64, 
+    cursor_path: Option<String>
+) -> Result<Vec<NodeExport>, sqlx::Error> {
     let sid = scan_id.to_string();
+    let query_str = if let Some(path) = cursor_path {
+        "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count \
+         FROM nodes WHERE scan_id = ?1 AND is_dir = 1 AND path > ?2 ORDER BY path ASC LIMIT ?3"
+    } else {
+        "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count \
+         FROM nodes WHERE scan_id = ?1 AND is_dir = 1 ORDER BY path ASC LIMIT ?2"
+    };
 
-    while offset < limit {
-        let batch = (limit - offset).min(EXPORT_CHUNK_SIZE);
-        let rows = sqlx::query(
-            "SELECT path, parent_path, logical_size, allocated_size \
-             FROM files WHERE scan_id = ?1 ORDER BY allocated_size DESC LIMIT ?2 OFFSET ?3",
-        )
-        .bind(&sid)
-        .bind(batch)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await?;
+    let query = if let Some(path) = cursor_path.as_ref() {
+         sqlx::query(query_str)
+             .bind(&sid)
+             .bind(path)
+             .bind(limit)
+    } else {
+         sqlx::query(query_str)
+             .bind(&sid)
+             .bind(limit)
+    };
+    
+    let rows = query.fetch_all(&state.db).await?;
 
-        if rows.is_empty() {
-            break;
-        }
 
-        for row in rows.iter() {
-            results.push(FileExport {
-                path: row.get("path"),
-                parent_path: row.get("parent_path"),
-                logical_size: row.get("logical_size"),
-                allocated_size: row.get("allocated_size"),
-            });
-        }
-
-        let fetched = rows.len() as i64;
-        offset += fetched;
-        if fetched < batch {
-            break;
-        }
+    let mut results = Vec::with_capacity(rows.len());
+    for row in rows {
+        results.push(NodeExport {
+            path: row.get("path"),
+            parent_path: row.get("parent_path"),
+            depth: row.get("depth"),
+            is_dir: row.get("is_dir"),
+            logical_size: row.get("logical_size"),
+            allocated_size: row.get("allocated_size"),
+            file_count: row.get("file_count"),
+            dir_count: row.get("dir_count"),
+        });
     }
+    Ok(results)
+}
 
+/// Fetches all files for JSON export (or non-streaming).
+async fn fetch_files_all(state: &AppState, scan_id: Uuid, limit: i64) -> Result<Vec<FileExport>, sqlx::Error> {
+    let mut results = Vec::new();
+    let mut current_cursor: Option<(i64, String)> = None;
+    let mut count = 0;
+    loop {
+        let remaining = limit - count;
+        if remaining <= 0 { break; }
+        let batch_size = EXPORT_CHUNK_SIZE.min(remaining);
+        
+        let batch = fetch_files_batch(state, scan_id, batch_size, current_cursor.clone()).await?;
+
+        if batch.is_empty() { break; }
+        
+        if let Some(last) = batch.last() {
+            current_cursor = Some((last.allocated_size, last.path.clone()));
+        }
+        
+        count += batch.len() as i64;
+        results.extend(batch);
+    }
+    Ok(results)
+}
+
+/// Fetches a single batch of files for export.
+async fn fetch_files_batch(
+    state: &AppState, 
+    scan_id: Uuid, 
+    limit: i64, 
+    cursor: Option<(i64, String)>
+) -> Result<Vec<FileExport>, sqlx::Error> {
+    let sid = scan_id.to_string();
+    // Keyset: (allocated_size, path) < (last_alloc, last_path)
+    // DESC order for allocated_size, ASC for path (determinism)
+    // WHERE allocated_size < ? OR (allocated_size = ? AND path > ?) 
+    
+    let query_str = if cursor.is_some() {
+        "SELECT path, parent_path, logical_size, allocated_size \
+         FROM files WHERE scan_id = ?1 AND (allocated_size < ?2 OR (allocated_size = ?3 AND path > ?4)) \
+         ORDER BY allocated_size DESC, path ASC LIMIT ?5"
+    } else {
+        "SELECT path, parent_path, logical_size, allocated_size \
+         FROM files WHERE scan_id = ?1 ORDER BY allocated_size DESC, path ASC LIMIT ?2"
+    };
+
+    let query = if let Some((last_alloc, last_path)) = cursor {
+         sqlx::query(query_str)
+             .bind(&sid)
+             .bind(last_alloc)
+             .bind(last_alloc)
+             .bind(last_path)
+             .bind(limit)
+    } else {
+         sqlx::query(query_str)
+             .bind(&sid)
+             .bind(limit)
+    };
+    
+    let rows = query.fetch_all(&state.db).await?;
+
+
+    let mut results = Vec::with_capacity(rows.len());
+    for row in rows {
+        results.push(FileExport {
+            path: row.get("path"),
+            parent_path: row.get("parent_path"),
+            logical_size: row.get("logical_size"),
+            allocated_size: row.get("allocated_size"),
+        });
+    }
     Ok(results)
 }
 

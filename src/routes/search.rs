@@ -280,7 +280,7 @@ pub async fn search_scan(
             // Sanitize file_type to prevent injection (for COUNT query) (FIX Bug #53)
             let sanitized = file_type
                 .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
                 .take(20)
                 .collect::<String>();
             if !sanitized.is_empty() {
@@ -335,7 +335,7 @@ pub async fn search_scan(
             // Sanitize file_type to prevent injection (for UNION query) (FIX Bug #53)
             let sanitized = file_type
                 .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
                 .take(20)
                 .collect::<String>();
             if !sanitized.is_empty() {

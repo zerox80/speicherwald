@@ -5,6 +5,7 @@
 //! These middleware components can be layered with Axum's routing system to provide
 //! comprehensive request processing pipeline.
 
+pub mod auth;
 pub mod ip;
 pub mod rate_limit;
 pub mod security_headers;

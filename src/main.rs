@@ -206,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
                 .clamp(1024 * 1024, 50 * 1024 * 1024), // 1MB to 50MB
         ))
         .layer(from_fn(middleware::validation::validate_request_middleware))
+        .layer(from_fn(middleware::auth::auth_middleware)) // FIX Bug #5: Apply authentication
         .layer(from_fn(middleware::rate_limit::rate_limit_middleware))
         .layer(compression)
         .layer(TraceLayer::new_for_http())

@@ -280,18 +280,22 @@ pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_
     {
         // Check for invalid characters in Windows paths (excluding colon after drive letter)
         const INVALID_CHARS: &[char] = &['<', '>', '"', '|', '?', '*'];
-        for c in INVALID_CHARS {
-            if path.contains(*c) && !path.starts_with("\\\\?\\") {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": {
-                            "code": "INVALID_PATH_CHARS",
-                            "message": format!("Path contains invalid character: {}", c),
-                        },
-                        "status": 400,
-                    })),
-                ));
+        // FIX Bug #2: Also check invalid chars in restricted paths (extended paths allow most chars)
+        let is_extended = path.starts_with("\\\\?\\");
+        if !is_extended {
+            for c in INVALID_CHARS {
+                if path.contains(*c) {
+                     return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": {
+                                "code": "INVALID_PATH_CHARS",
+                                "message": format!("Path contains invalid character: {}", c),
+                            },
+                            "status": 400,
+                        })),
+                    ));
+                }
             }
         }
 

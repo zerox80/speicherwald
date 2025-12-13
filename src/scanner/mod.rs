@@ -278,7 +278,7 @@ pub async fn run_scan(
                                     continue;
                                 }
                             }
-                            if !options_cl.include_hidden && is_hidden_or_system(&md) {
+                            if !options_cl.include_hidden && is_hidden_or_system(&p, &md) {
                                 continue;
                             }
                             // FIX Bug #66 - max_depth = 0 means scan only root, depth >= 1 means too deep
@@ -287,44 +287,28 @@ pub async fn run_scan(
                                     // Don't recurse into subdirectories
                                     continue;
                                 }
+                                if max_d > 255 {
+                                    // Hard limit to prevent stack overflow / infinite recursion
+                                    if depth > 255 { continue; }
+                                }
+
                             }
                             subdirs.push(p);
                         } else if md.is_file() {
-                            if !options_cl.include_hidden && is_hidden_or_system(&md) {
+                            if !options_cl.include_hidden && is_hidden_or_system(&p, &md) {
                                 continue;
                             }
                             root_files += 1;
                             let logical_sz = md.len();
-                            // FIX Bug #40: Return error on overflow instead of setting to u64::MAX
-                            let (new_logical, overflow1) = root_files_logical.overflowing_add(logical_sz);
-                            if overflow1 && options_cl.measure_logical {
-                                tracing::error!("Logical size overflow at path: {:?}", p);
-                                let _ = tx_clone.send(ScanEvent::Failed {
-                                    message: format!("Size overflow at: {:?}", p),
-                                });
-                                let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
-                                let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
-                                continue; // Skip this file but continue scanning
-                            } else if options_cl.measure_logical {
-                                root_files_logical = new_logical;
-                            }
+                            // FIX Bug #4: Use saturating_add to prevent overflow/panic
+                            root_files_logical = root_files_logical.saturating_add(logical_sz);
+
                             let alloc_sz = if options_cl.measure_allocated {
                                 unsafe_get_allocated_size(&p).unwrap_or(logical_sz)
                             } else {
                                 logical_sz
                             };
-                            let (new_alloc, overflow2) = root_files_alloc.overflowing_add(alloc_sz);
-                            if overflow2 {
-                                tracing::error!("Allocated size overflow at path: {:?}", p);
-                                let _ = tx_clone.send(ScanEvent::Failed {
-                                    message: format!("Size overflow at: {:?}", p),
-                                });
-                                let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
-                                let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
-                                continue; // Skip this file but continue scanning
-                            } else {
-                                root_files_alloc = new_alloc;
-                            }
+                            root_files_alloc = root_files_alloc.saturating_add(alloc_sz);
                             // buffer file record at root level, flush in batches (ensure flush_thr >= 1)
                             let flush_limit = flush_thr.max(1);
                             root_file_buf.push(FileRecord {
@@ -343,6 +327,10 @@ pub async fn run_scan(
                                     out_files,
                                     ScanResultSummary::default(),
                                 ));
+                                if tx_res_cl.is_closed() {
+                                    return; // Stop processing if receiver is gone (Zombie prevention)
+                                }
+
                             }
                         }
                     }
@@ -591,7 +579,7 @@ fn scan_dir(
     if !options.follow_symlinks && is_reparse_point(&meta) {
         return Ok((0, 0, 0, 0));
     }
-    if !options.include_hidden && is_hidden_or_system(&meta) {
+    if !options.include_hidden && is_hidden_or_system(dir, &meta) {
         return Ok((0, 0, 0, 0));
     }
 
@@ -632,7 +620,7 @@ fn scan_dir(
                     if !options.follow_symlinks && is_reparse_point(&md) {
                         continue;
                     }
-                    if !options.include_hidden && is_hidden_or_system(&md) {
+                    if !options.include_hidden && is_hidden_or_system(&path, &md) {
                         continue;
                     }
                     // FIX Bug #9: Check max_depth: depth is 0-indexed from root
@@ -662,7 +650,7 @@ fn scan_dir(
                     logical = logical.saturating_add(d_logical);
                     allocated = allocated.saturating_add(d_alloc);
                 } else if md.is_file() {
-                    if !options.include_hidden && is_hidden_or_system(&md) {
+                    if !options.include_hidden && is_hidden_or_system(&path, &md) {
                         continue;
                     }
                     local_files += 1;
@@ -672,23 +660,11 @@ fn scan_dir(
                     } else {
                         logical_sz
                     };
-                    // FIX Bug #22 - Check for overflow in scan_dir (consistent handling)
+                    // FIX Bug #4: Use saturating_add for consistency
                     if options.measure_logical {
-                        let (new_logical, overflow_logical) = logical.overflowing_add(logical_sz);
-                        if overflow_logical {
-                            tracing::warn!("Logical size overflow at path: {:?}", path);
-                            logical = u64::MAX;
-                        } else {
-                            logical = new_logical;
-                        }
+                        logical = logical.saturating_add(logical_sz);
                     }
-                    let (new_alloc, overflow_alloc) = allocated.overflowing_add(alloc_sz);
-                    if overflow_alloc {
-                        tracing::warn!("Allocated size overflow at path: {:?}", path);
-                        allocated = u64::MAX;
-                    } else {
-                        allocated = new_alloc;
-                    }
+                    allocated = allocated.saturating_add(alloc_sz);
 
                     // collect file record
                     files.push(FileRecord {
@@ -821,7 +797,17 @@ fn matches_excludes(path: &Path, set: &GlobSet) -> bool {
         return true; // Exclude paths with invalid UTF-8
     }
     let normalized = s.replace('\\', "/");
-    set.is_match(&normalized)
+    if set.is_match(&normalized) {
+        return true;
+    }
+    // Also check just the filename for convenience
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if set.is_match(name) {
+            return true;
+        }
+    }
+    false
+
 }
 
 #[cfg(windows)]
@@ -882,7 +868,7 @@ fn is_network_path(_path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn is_hidden_or_system(md: &fs::Metadata) -> bool {
+fn is_hidden_or_system(_path: &Path, md: &fs::Metadata) -> bool {
     const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
     const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
     let attrs = md.file_attributes();
@@ -890,9 +876,12 @@ fn is_hidden_or_system(md: &fs::Metadata) -> bool {
 }
 
 #[cfg(not(windows))]
-fn is_hidden_or_system(_md: &fs::Metadata) -> bool {
-    // Auf Nicht-Windows: keine Hidden/System-Attribute – immer false
-    false
+fn is_hidden_or_system(path: &Path, _md: &fs::Metadata) -> bool {
+    // Check for dotfiles on Unix
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.starts_with('.'))
+        .unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -931,16 +920,16 @@ lazy_static::lazy_static! {
 
 #[cfg(windows)]
 fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
-    // Zuerst im Cache nachschauen - handle lock poisoning
-    match SIZE_CACHE.lock() {
+    // FIX Bug #3: Use opportunistic caching with try_lock to avoid global lock contention.
+    // If the lock is busy, we just skip the cache and calculate the size directly.
+    match SIZE_CACHE.try_lock() {
         Ok(mut cache) => {
             if let Some(entry) = cache.get(&path.to_path_buf()) {
                 return *entry;
             }
         }
-        Err(e) => {
-            tracing::warn!("SIZE_CACHE lock poisoned: {}", e);
-            // Continue without cache
+        Err(_) => {
+            // Lock busy, skip cache read
         }
     }
 
@@ -962,7 +951,8 @@ fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
                 if err == ERROR_NOT_SUPPORTED {
                     tracing::debug!("GetCompressedFileSizeW not supported for {:?}", path);
                 }
-                if let Ok(mut cache) = SIZE_CACHE.lock() {
+                // Try to cache the negative result (None) if we can acquire the lock
+                if let Ok(mut cache) = SIZE_CACHE.try_lock() {
                     cache.put(path.to_path_buf(), None);
                 }
                 return None;
@@ -970,11 +960,9 @@ fn unsafe_get_allocated_size(path: &Path) -> Option<u64> {
         }
         let size = ((high as u64) << 32) | (low as u64);
 
-        // In Cache speichern - ignore lock poisoning
-        if let Ok(mut cache) = SIZE_CACHE.lock() {
+        // In Cache speichern - ignore if lock busy
+        if let Ok(mut cache) = SIZE_CACHE.try_lock() {
             cache.put(path.to_path_buf(), Some(size));
-        } else {
-            tracing::debug!("Failed to update SIZE_CACHE (lock poisoned)");
         }
 
         Some(size)

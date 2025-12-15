@@ -5,6 +5,9 @@ on:
     # Run every Monday at 08:00 UTC
     - cron: '0 8 * * 1'
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/dependency-check.yml'
 
 permissions:
   contents: read
@@ -75,7 +78,7 @@ jobs:
                 `## Outdated Dependencies\n\n${outdatedReport}\n\n` +
                 `---\n*This issue was automatically created by the dependency check workflow.*`;
 
-              const MAX_LENGTH = 65000;
+              const MAX_LENGTH = 30000;
               if (body.length > MAX_LENGTH) {
                 const truncatedMessage = '\n\n... (Output truncated due to size limit. Please check the Action logs for the full report.)';
                 body = body.substring(0, MAX_LENGTH - truncatedMessage.length) + truncatedMessage;

@@ -69,11 +69,17 @@ jobs:
             const outdatedReport = fs.existsSync('outdated-report.md') ? fs.readFileSync('outdated-report.md', 'utf8') : '';
             
             if (auditReport.includes('vulnerabilities found') || outdatedReport.length > 100) {
-              const body = `# Weekly Dependency Check Report\n\n` +
+              let body = `# Weekly Dependency Check Report\n\n` +
                 `Generated on: ${new Date().toISOString()}\n\n` +
                 `## Security Audit\n\n${auditReport}\n\n` +
                 `## Outdated Dependencies\n\n${outdatedReport}\n\n` +
                 `---\n*This issue was automatically created by the dependency check workflow.*`;
+
+              const MAX_LENGTH = 65000;
+              if (body.length > MAX_LENGTH) {
+                const truncatedMessage = '\n\n... (Output truncated due to size limit. Please check the Action logs for the full report.)';
+                body = body.substring(0, MAX_LENGTH - truncatedMessage.length) + truncatedMessage;
+              }
               
               await github.rest.issues.create({
                 owner: context.repo.owner,

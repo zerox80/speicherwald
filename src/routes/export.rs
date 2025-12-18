@@ -204,7 +204,8 @@ async fn export_csv(state: AppState, scan_id: Uuid, scope: &str, limit: i64) -> 
             let scope = scope_str.clone();
             async move {
                 if nodes_done && files_done {
-                    return Ok(None);
+                    // Type annotation needed for the compiler
+                    return Ok::<Option<(String, (Option<String>, Option<(i64, String)>, bool, bool, bool, i64))>, AppError>(None);
                 }
                 
                 let remaining = limit - count;
@@ -421,7 +422,7 @@ async fn fetch_nodes_batch(
     cursor_path: Option<String>
 ) -> Result<Vec<NodeExport>, sqlx::Error> {
     let sid = scan_id.to_string();
-    let query_str = if let Some(path) = cursor_path {
+    let query_str = if cursor_path.is_some() {
         "SELECT path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count \
          FROM nodes WHERE scan_id = ?1 AND is_dir = 1 AND path > ?2 ORDER BY path ASC LIMIT ?3"
     } else {

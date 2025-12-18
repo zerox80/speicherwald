@@ -336,7 +336,7 @@ fn Scan(id: String) -> Element {
     // Steuerung für Baum/Top
     let tree_path = use_signal(|| None as Option<String>);
     let tree_depth = use_signal(|| 3_i64);
-    let tree_limit = use_signal(|| 200_i64);
+    let tree_limit = use_signal(|| 20_000_i64);
     let tree_sort = use_signal(|| "size".to_string()); // server hint: "size" | "name"
     // Client-side sort controls for Tree table
     let tree_sort_view = use_signal(|| "allocated".to_string()); // allocated|logical|name|type|modified
@@ -371,6 +371,11 @@ fn Scan(id: String) -> Element {
 
     // Navigation History für Breadcrumbs
     let nav_history = use_signal(|| Vec::<String>::new());
+
+    // Tabs & Live Updates
+    let active_tab = use_signal(|| "explorer".to_string());
+    let live_update = use_signal(|| false);
+    let live_log_enabled = use_signal(|| true);
 
     // Ensure pagination starts from 0 whenever the path changes
     {
@@ -1059,13 +1064,13 @@ fn Scan(id: String) -> Element {
                 button { class: "btn btn-danger", onclick: purge, "Purge" }
             }
             div { class: "tab-nav",
-                div { class: "tab-item {if *active_tab.read() == \"explorer\" { \"active\" } else { \"\" }}", onclick: move |_| active_tab.set("explorer".into()), "Explorer" }
-                div { class: "tab-item {if *active_tab.read() == \"tree\" { \"active\" } else { \"\" }}", onclick: move |_| active_tab.set("tree".into()), "Baum-Analyse" }
-                div { class: "tab-item {if *active_tab.read() == \"stats\" { \"active\" } else { \"\" }}", onclick: move |_| active_tab.set("stats".into()), "Statistiken" }
-                div { class: "tab-item {if *active_tab.read() == \"log\" { \"active\" } else { \"\" }}", onclick: move |_| active_tab.set("log".into()), "Live Log" }
+                div { class: if active_tab.read().as_str() == "explorer" { "tab-item active" } else { "tab-item" }, onclick: move |_| { let mut active_tab = active_tab; active_tab.set("explorer".into()); }, "Explorer" }
+                div { class: if active_tab.read().as_str() == "tree" { "tab-item active" } else { "tab-item" }, onclick: move |_| { let mut active_tab = active_tab; active_tab.set("tree".into()); }, "Baum-Analyse" }
+                div { class: if active_tab.read().as_str() == "stats" { "tab-item active" } else { "tab-item" }, onclick: move |_| { let mut active_tab = active_tab; active_tab.set("stats".into()); }, "Statistiken" }
+                div { class: if active_tab.read().as_str() == "log" { "tab-item active" } else { "tab-item" }, onclick: move |_| { let mut active_tab = active_tab; active_tab.set("log".into()); }, "Live Log" }
             }
 
-            { (*active_tab.read() == "explorer").then(|| rsx! {
+            { (active_tab.read().as_str() == "explorer").then(|| rsx! {
                 // Breadcrumbs Navigation
                 { (!nav_history.read().is_empty()).then(|| rsx!{
                     div { class: "breadcrumbs",
@@ -1614,7 +1619,7 @@ fn Scan(id: String) -> Element {
                 }  // table close
             }) }
 
-            { (*active_tab.read() == "tree").then(|| rsx! {
+            { (active_tab.read().as_str() == "tree").then(|| rsx! {
                 div { style: "margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;",
                     button { class: "btn", onclick: move |_| (do_load_tree_btn.as_ref())(), "Baum laden" }
                     span { "Pfad:" }
@@ -1652,146 +1657,149 @@ fn Scan(id: String) -> Element {
                     { err_tree.read().as_ref().map(|e| rsx!(span { class: "text-danger", " Fehler: {e}" })) }
                 }
                 h3 { style: "margin-top:16px;", "Baum – Ergebnisse" }
-                table { class: "responsive-table",
-                    thead { tr {
-                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                            let key = "type".to_string();
-                            let current_sort = tree_sort_view.read().clone();
-                            let current_order = tree_order.read().clone();
-                            let mut tree_sort_view = tree_sort_view.clone();
-                            let mut tree_order = tree_order.clone();
-                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                        }, "Typ" }
-                        th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                            let key = "modified".to_string();
-                            let current_sort = tree_sort_view.read().clone();
-                            let current_order = tree_order.read().clone();
-                            let mut tree_sort_view = tree_sort_view.clone();
-                            let mut tree_order = tree_order.clone();
-                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                        }, "Zuletzt" }
-                        th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                            let key = "allocated".to_string();
-                            let current_sort = tree_sort_view.read().clone();
-                            let current_order = tree_order.read().clone();
-                            let mut tree_sort_view = tree_sort_view.clone();
-                            let mut tree_order = tree_order.clone();
-                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                        }, "Allokiert" }
-                        th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                            let key = "logical".to_string();
-                            let current_sort = tree_sort_view.read().clone();
-                            let current_order = tree_order.read().clone();
-                            let mut tree_sort_view = tree_sort_view.clone();
-                            let mut tree_order = tree_order.clone();
-                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                        }, "Logisch" }
-                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                            let key = "name".to_string();
-                            let current_sort = tree_sort_view.read().clone();
-                            let current_order = tree_order.read().clone();
-                            let mut tree_sort_view = tree_sort_view.clone();
-                            let mut tree_order = tree_order.clone();
-                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                        }, "Pfad" }
-                        th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
-                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
-                    } }
-                    tbody {
-                        { let mut rows = tree_items.read().clone();
-                          let current_sort = tree_sort_view.read().clone();
-                          let current_order = tree_order.read().clone();
-                          rows.sort_by_key(|n| match current_sort.as_str() {
-                              "logical" => n.logical_size,
-                              "name" => 0,
-                              "type" => if n.is_dir { 0 } else { 1 },
-                              "modified" => n.mtime.unwrap_or(0),
-                              _ => n.allocated_size,
-                          });
-                          if current_sort == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
-                          if current_order == "desc" { rows.reverse(); }
-                          rows.into_iter().map(|n| {
-                            let t = if n.is_dir { "Ordner" } else { "Datei" };
-                            let alloc = n.allocated_size; let logical = n.logical_size; let p = n.path.clone();
-                            let percent = if max_alloc_tree > 0 { ((alloc as f64) / (max_alloc_tree as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
-                            let bar_width = format!("width:{:.1}%;", percent);
-                            let p_nav = p.clone();
-                            let p_copy = p.clone();
-                            let p_for_move = p.clone();
-                            let move_signal = move_dialog.clone();
-                            let bar_class = if n.is_dir { "bar-fill-indigo" } else { "bar-fill-green" };
-                            let item_name = p
-                                .rsplit_once(['\\', '/'])
-                                .map(|(_, tail)| tail.to_string())
-                                .unwrap_or_else(|| {
-                                    p_for_move
-                                        .trim_end_matches(['\\', '/'])
-                                        .rsplit_once(['\\', '/'])
-                                        .map(|(_, tail)| tail.to_string())
-                                        .unwrap_or_else(|| p_for_move.clone())
-                                });
-                            rsx!{ tr {
-                                td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
-                                td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
-                                td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
-                                td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
-                                td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
-                                    let mut list_path = list_path.clone();
-                                    list_path.set(Some(p_nav.clone())); 
-                                    let mut hist = nav_history.read().clone();
-                                    if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
-                                    let mut nav_history = nav_history.clone();
-                                    nav_history.set(hist);
-                                }, "{p}" }
-                                td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
-                                    div { class: "bar-shell",
-                                        div { class: "{bar_class}", style: "{bar_width}" }
+                div { class: "table-container",
+                    table { class: "responsive-table",
+                        thead { tr {
+                            th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                                let key = "type".to_string();
+                                let current_sort = tree_sort_view.read().clone();
+                                let current_order = tree_order.read().clone();
+                                let mut tree_sort_view = tree_sort_view.clone();
+                                let mut tree_order = tree_order.clone();
+                                if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                            }, "Typ" }
+                            th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                                let key = "modified".to_string();
+                                let current_sort = tree_sort_view.read().clone();
+                                let current_order = tree_order.read().clone();
+                                let mut tree_sort_view = tree_sort_view.clone();
+                                let mut tree_order = tree_order.clone();
+                                if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                            }, "Zuletzt" }
+                            th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                                let key = "allocated".to_string();
+                                let current_sort = tree_sort_view.read().clone();
+                                let current_order = tree_order.read().clone();
+                                let mut tree_sort_view = tree_sort_view.clone();
+                                let mut tree_order = tree_order.clone();
+                                if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                            }, "Allokiert" }
+                            th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                                let key = "logical".to_string();
+                                let current_sort = tree_sort_view.read().clone();
+                                let current_order = tree_order.read().clone();
+                                let mut tree_sort_view = tree_sort_view.clone();
+                                let mut tree_order = tree_order.clone();
+                                if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                            }, "Logisch" }
+                            th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                                let key = "name".to_string();
+                                let current_sort = tree_sort_view.read().clone();
+                                let current_order = tree_order.read().clone();
+                                let mut tree_sort_view = tree_sort_view.clone();
+                                let mut tree_order = tree_order.clone();
+                                if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                            }, "Pfad" }
+                            th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
+                            th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
+                        } }
+                        tbody {
+                            { let mut rows = tree_items.read().clone();
+                              let current_sort = tree_sort_view.read().clone();
+                              let current_order = tree_order.read().clone();
+                              rows.sort_by_key(|n| match current_sort.as_str() {
+                                  "logical" => n.logical_size,
+                                  "name" => 0,
+                                  "type" => if n.is_dir { 0 } else { 1 },
+                                  "modified" => n.mtime.unwrap_or(0),
+                                  _ => n.allocated_size,
+                              });
+                              if current_sort == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
+                              if current_order == "desc" { rows.reverse(); }
+                              rows.into_iter().map(|n| {
+                                let t = if n.is_dir { "Ordner" } else { "Datei" };
+                                let alloc = n.allocated_size; let logical = n.logical_size; let p = n.path.clone();
+                                let percent = if max_alloc_tree > 0 { ((alloc as f64) / (max_alloc_tree as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
+                                let bar_width = format!("width:{:.1}%;", percent);
+                                let p_nav = p.clone();
+                                let p_copy = p.clone();
+                                let p_for_move = p.clone();
+                                let move_signal = move_dialog.clone();
+                                let bar_class = if n.is_dir { "bar-fill-indigo" } else { "bar-fill-green" };
+                                let item_name = p
+                                    .rsplit_once(['\\', '/'])
+                                    .map(|(_, tail)| tail.to_string())
+                                    .unwrap_or_else(|| {
+                                        p_for_move
+                                            .trim_end_matches(['\\', '/'])
+                                            .rsplit_once(['\\', '/'])
+                                            .map(|(_, tail)| tail.to_string())
+                                            .unwrap_or_else(|| p_for_move.clone())
+                                    });
+                                rsx!{ tr {
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
+                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
+                                    td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
+                                    td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
+                                    td { class: "truncate-text", style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;max-width:300px;", title: "{p}", onclick: move |_| { 
+                                        let mut list_path = list_path.clone();
+                                        list_path.set(Some(p_nav.clone())); 
+                                        let mut hist = nav_history.read().clone();
+                                        if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
+                                        let mut nav_history = nav_history.clone();
+                                        nav_history.set(hist);
+                                    }, "{p}" }
+                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
+                                        div { class: "bar-shell",
+                                            div { class: "{bar_class}", style: "{bar_width}" }
+                                        }
                                     }
-                                }
-                                td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                    div { style: "display:flex;gap:8px;flex-wrap:wrap;",
-                                        button { class: "btn", onclick: {
-                                                let move_dialog = move_signal.clone();
-                                                let path = p_for_move.clone();
-                                                let name = item_name.clone();
-                                                move |_| {
-                                                    let mut dlg = move_dialog.clone();
-                                                    dlg.set(Some(MoveDialogState {
-                                                        source_path: path.clone(),
-                                                        source_name: name.clone(),
-                                                        logical_size: logical,
-                                                        allocated_size: alloc,
-                                                        destination: String::new(),
-                                                        selected_drive: None,
-                                                        remove_source: true,
-                                                        overwrite: false,
-                                                        in_progress: false,
-                                                        done: false,
-                                                        result: None,
-                                                        error: None,
-                                                    }));
-                                                }
-                                            }, "Verschieben" }
-                                        button { class: "btn", onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                        div { style: "display:flex;gap:8px;flex-wrap:wrap;",
+                                            button { class: "btn", onclick: {
+                                                    let move_dialog = move_signal.clone();
+                                                    let path = p_for_move.clone();
+                                                    let name = item_name.clone();
+                                                    move |_| {
+                                                        let mut dlg = move_dialog.clone();
+                                                        dlg.set(Some(MoveDialogState {
+                                                            source_path: path.clone(),
+                                                            source_name: name.clone(),
+                                                            logical_size: logical,
+                                                            allocated_size: alloc,
+                                                            destination: String::new(),
+                                                            selected_drive: None,
+                                                            remove_source: true,
+                                                            overwrite: false,
+                                                            in_progress: false,
+                                                            done: false,
+                                                            result: None,
+                                                            error: None,
+                                                        }));
+                                                    }
+                                                }, "Verschieben" }
+                                            button { class: "btn", onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
+                                        }
                                     }
-                                }
-                            } }
-                        }) }
+                                } }
+                              })
+                            }
+                        }
                     }
                 }
             }) }
 
-            { (*active_tab.read() == "stats").then(|| rsx! {
+            { (active_tab.read().as_str() == "stats").then(|| rsx! {
                 div { style: "margin-top:16px;padding:16px;background:#0f1117;border:1px solid #222533;border-radius:8px;",
                     h3 { "Export" }
                     div { style: "display:flex;gap:12px;margin-top:8px;",
                          button { class: "btn", onclick: {
                                 let id_export = id.clone();
-                                move |_| { trigger_download(&id_export, "csv"); }
+                                move |_| { trigger_download(&id_export, Some("csv")); }
                             }, "CSV Export (Gesamter Scan)" }
                          button { class: "btn", onclick: {
                                 let id_export = id.clone();
-                                move |_| { trigger_download(&id_export, "json"); }
+                                move |_| { trigger_download(&id_export, Some("json")); }
                             }, "JSON Export (Rohdaten)" }
                     }
                 }
@@ -1998,7 +2006,7 @@ fn Scan(id: String) -> Element {
                 }  // table close
             }) }
 
-            { (*active_tab.read() == "log").then(|| rsx! {
+            { (active_tab.read().as_str() == "log").then(|| rsx! {
                  div { style: "margin-top:20px;",
                      div { style: "display:flex;justify-content:space-between;align-items:center;",
                          h3 { "Live Log" }
@@ -2010,6 +2018,7 @@ fn Scan(id: String) -> Element {
                      pre { style: "background:#0b0c0f;border:1px solid #222533;border-radius:8px;padding:10px;max-height:600px;overflow:auto;white-space:pre-wrap;font-family:monospace;", "{log}" }
                  }
             }) }
+        }
         { move_dialog.read().as_ref().map(|dlg| move_dialog_view(dlg, move_dialog.clone(), drive_targets.clone(), drive_fetch_error.clone())) }
     }
 }

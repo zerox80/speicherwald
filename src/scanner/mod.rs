@@ -233,7 +233,7 @@ pub async fn run_scan(
                     return;
                 }
             }
-            if !options_cl.include_hidden && is_hidden_or_system(&meta) {
+            if !options_cl.include_hidden && is_hidden_or_system(&root_clone, &meta) {
                 drop(permit);
                 return;
             }
@@ -281,17 +281,12 @@ pub async fn run_scan(
                             if !options_cl.include_hidden && is_hidden_or_system(&p, &md) {
                                 continue;
                             }
-                            // FIX Bug #66 - max_depth = 0 means scan only root, depth >= 1 means too deep
+                            // FIX Bug #66 - max_depth = 0 means scan only root
                             if let Some(max_d) = options_cl.max_depth {
                                 if max_d == 0 {
                                     // Don't recurse into subdirectories
                                     continue;
                                 }
-                                if max_d > 255 {
-                                    // Hard limit to prevent stack overflow / infinite recursion
-                                    if depth > 255 { continue; }
-                                }
-
                             }
                             subdirs.push(p);
                         } else if md.is_file() {

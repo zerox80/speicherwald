@@ -47,7 +47,7 @@ use crate::{
     },
     routes::paths_helpers::get_volume_root,
     state::AppState,
-    state::AppState,
+
     types::{MovePathRequest, MovePathResponse},
 };
 use tokio_util::sync::CancellationToken;

@@ -508,7 +508,7 @@ pub async fn scan_events(
 
 
 const LIKE_ESCAPE: char = '!';
-const TREE_LIMIT_MAX: i64 = 5000;
+const TREE_LIMIT_MAX: i64 = 10_000_000;
 
 fn escape_like_pattern(p: &str) -> String {
     let mut out = String::with_capacity(p.len());
@@ -1220,4 +1220,38 @@ fn get_atime(i: &ListItem) -> i64 {
         ListItem::Dir { atime, .. } => atime.unwrap_or(0),
         ListItem::File { atime, .. } => atime.unwrap_or(0),
     }
+}
+
+async fn get_subtree_totals(
+    id: Uuid,
+    path: &str,
+    pool: &sqlx::SqlitePool,
+) -> AppResult<(i64, i64)> {
+    let row = sqlx::query(
+        "SELECT file_count, dir_count FROM nodes WHERE scan_id = ?1 AND path = ?2"
+    )
+    .bind(id.to_string())
+    .bind(path)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(r) = row {
+         Ok((r.get::<i64, _>("file_count"), r.get::<i64, _>("dir_count")))
+    } else {
+        Ok((0, 0))
+    }
+}
+
+async fn get_mtime_secs(path: &str) -> Option<i64> {
+     tokio::fs::metadata(path).await.ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
+
+async fn get_atime_secs(path: &str) -> Option<i64> {
+     tokio::fs::metadata(path).await.ok()
+        .and_then(|m| m.accessed().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
 }

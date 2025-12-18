@@ -52,9 +52,9 @@ pub async fn list_drives(
     maybe_remote: MaybeRemoteAddr,
     headers: HeaderMap,
 ) -> Response {
-    use std::{sync::mpsc, thread, time::Duration};
+    use std::time::Duration;
     use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives};
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
 
     // Per-endpoint rate limit: "/drives"
     let fallback_ip = maybe_remote.0.map(|addr| addr.ip());

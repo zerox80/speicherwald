@@ -404,6 +404,7 @@ fn Scan(id: String) -> Element {
     // Live-Update & Throttle
     let live_update = use_signal(|| true);
     let last_refresh = use_signal(|| 0.0_f64);
+    let active_tab = use_signal(|| "explorer".to_string());
 
     // KPI initial laden
     {
@@ -1057,972 +1058,958 @@ fn Scan(id: String) -> Element {
                 button { class: "btn", onclick: cancel, "Abbrechen" }
                 button { class: "btn btn-danger", onclick: purge, "Purge" }
             }
-            // Export-Bereich
-            details { open: true,
-                summary { "Export" }
-                div { style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0;",
-                    span { "Scope:" }
-                    select { value: "{export_scope}", oninput: move |e| { let mut export_scope = export_scope.clone(); export_scope.set(e.value()); },
-                        option { value: "all", "All" }
-                        option { value: "nodes", "Nodes" }
-                        option { value: "files", "Files" }
-                    }
-                    span { "Limit:" }
-                    input { r#type: "number", min: "1", value: "{export_limit}", oninput: move |e| {
-                        let value = e.value();
-                        let mut export_limit = export_limit.clone();
-                        if let Ok(v) = value.parse::<i64>() { export_limit.set(v.max(1)); }
-                    } }
-                    // Download Buttons
-                    button { class: "btn", onclick: {
-                        let id_csv = id.clone();
-                        let scope = export_scope.clone();
-                        let limit = export_limit.clone();
-                        move |_| {
-                            let url = format!("/scans/{}/export?format=csv&scope={}&limit={}", id_csv, scope.read().clone(), *limit.read());
-                            trigger_download(&url, Some(&format!("scan_{}.csv", id_csv)));
-                        }
-                    }, "CSV" }
-                    button { class: "btn", onclick: {
-                        let id_json = id.clone();
-                        let scope = export_scope.clone();
-                        let limit = export_limit.clone();
-                        move |_| {
-                            let url = format!("/scans/{}/export?format=json&scope={}&limit={}", id_json, scope.read().clone(), *limit.read());
-                            trigger_download(&url, Some(&format!("scan_{}.json", id_json)));
-                        }
-                    }, "JSON" }
-                    button { class: "btn", onclick: {
-                        let id_stats = id.clone();
-                        move |_| {
-                            let url = format!("/scans/{}/statistics", id_stats);
-                            trigger_download(&url, Some(&format!("scan_{}_stats.json", id_stats)));
-                        }
-                    }, "Statistics" }
-                }
-            }
-             details { open: true,
-                 summary { "Live-Fortschritt" }
-                 pre { style: "background:#0b0c0f;border:1px solid #222533;border-radius:8px;padding:10px;max-height:240px;overflow:auto;white-space:pre-wrap;", "{log}" }
-             }
-            // Breadcrumbs Navigation
-            { (!nav_history.read().is_empty()).then(|| rsx!{
-                div { class: "breadcrumbs",
-                    span { class: "text-muted", "Navigationspfad:" }
-                    { nav_history.read().iter().enumerate().map(|(i, path)| {
-                        let p = path.clone();
-                        let nav_hist = nav_history.clone();
-                        let tree_path_nav = tree_path.clone();
-                        let list_path_nav = list_path.clone();
-                        let do_nav = do_load_tree.clone();
-                        rsx!{
-                            span { style: "display:flex;gap:4px;align-items:center;",
-                                { (i > 0).then(|| rsx!(span { class: "sep", "›" })) }
-                                button {
-                                    onclick: move |_| {
-                                        let new_path = if i == 0 { None } else { Some(p.clone()) };
-                                        let mut tree_path_nav = tree_path_nav.clone();
-                                        let mut list_path_nav = list_path_nav.clone();
-                                        let hist_slice = nav_hist.read()[..=i].to_vec();
-                                        let mut nav_hist = nav_hist.clone();
-                                        tree_path_nav.set(new_path.clone());
-                                        list_path_nav.set(new_path.clone());
-                                        nav_hist.set(hist_slice);
-                                        (do_nav.as_ref())();
-                                    },
-                                    "{path}"
-                                }
-                            }
-                        }
-                    }) }
-                    button {
-                        onclick: move |_| {
-                            let mut nav_history = nav_history.clone();
-                            let mut tree_path = tree_path.clone();
-                            let mut list_path = list_path.clone();
-                            nav_history.set(Vec::new());
-                            tree_path.set(None);
-                            list_path.set(None);
-                            (do_load_tree.as_ref())();
-                        },
-                        "Zurücksetzen"
-                    }
-                }
-            }) }
-            
-            div { style: "margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;",
-                button { class: "btn", onclick: move |_| (do_load_tree_btn.as_ref())(), "Baum laden" }
-                span { "Pfad:" }
-                input { value: "{tree_path.read().as_ref().cloned().unwrap_or_default()}", placeholder: "leer = alle Wurzeln",
-                    oninput: move |e| {
-                        let value = e.value();
-                        let mut tree_path = tree_path.clone();
-                        tree_path.set(if value.is_empty() { None } else { Some(value) });
-                    }
-                }
-                span { "Tiefe:" }
-                input { r#type: "number", min: "1", value: "{tree_depth}", oninput: move |e| {
-                        let value = e.value();
-                        let mut tree_depth = tree_depth.clone();
-                        if let Ok(v) = value.parse::<i64>() { tree_depth.set(v.max(1)); }
-                    }
-                }
-                span { "Sort:" }
-                select { value: "{tree_sort}", oninput: move |e| { let mut tree_sort = tree_sort.clone(); tree_sort.set(e.value()); },
-                    option { value: "size", "Größe" }
-                    option { value: "name", "Name" }
-                }
-                span { "Limit:" }
-                input { r#type: "number", min: "10", value: "{tree_limit}", oninput: move |e| {
-                        let value = e.value();
-                        let mut tree_limit = tree_limit.clone();
-                        if let Ok(v) = value.parse::<i64>() { tree_limit.set(v.max(10)); }
-                    }
-                }
-                button { class: "btn", onclick: more_tree, "Mehr" }
-                button { class: "btn", onclick: less_tree, "Weniger" }
-                label { style: "display:flex;gap:6px;align-items:center;", input { r#type: "checkbox", checked: *live_update.read(), oninput: move |_| { let current = *live_update.read(); let mut live_update = live_update.clone(); live_update.set(!current); } } " Live-Update Tabellen" }
-                span { "Einträge: {tree_items.len()}" }
-                { (*loading_tree.read()).then(|| rsx!(span { class: "spinner", "" })) }
-                { err_tree.read().as_ref().map(|e| rsx!(span { class: "text-danger", " Fehler: {e}" })) }
-            }
-            // Top-N Bereich + Visuelle Übersicht
-            div { style: "margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;",
-                span { "Top-N:" }
-                select { value: "{top_scope}", oninput: {
-                        let id = id.clone();
-                        let top_scope = top_scope.clone();
-                        let top_show = top_show.clone();
-                        let top_items = top_items.clone();
-                        move |e: Event<FormData>| {
-                        let value = e.value();
-                        let mut top_scope = top_scope.clone();
-                        let mut top_show2 = top_show.clone();
-                        top_scope.set(value.clone());
-                        top_show2.set(15);
-                        let top_items2 = top_items.clone();
-                        let id_top = id.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let mut top_items2 = top_items2.clone();
-                            let q = api::TopQuery { scope: Some(value), limit: Some(100) };
-                            if let Ok(list) = api::get_top(&id_top, &q).await { top_items2.set(list); }
-                        });
-                    }
-                    },
-                    option { value: "dirs", "Ordner" }
-                    option { value: "files", "Dateien" }
-                }
-                button { style: btn_style(), onclick: top_less, "Weniger" }
-                button { style: btn_style(), onclick: top_more, "Mehr" }
-                button { class: "btn", onclick: {
-                        let top_items = top_items.clone();
-                        let top_show = top_show.clone();
-                        let id_csv = id.clone();
-                        move |_| {
-                            // FIX Bug #37: Note that this builds CSV in memory
-                            // For very large exports, consider using server-side streaming
-                            let mut csv = String::from("type,path,allocated,logical,depth,file_count,dir_count\n");
-                            let show_count = *top_show.read();
-                            for it in top_items.read().iter().take(show_count) {
-                                match it {
-                                    types::TopItem::Dir { path, allocated_size, logical_size, depth, file_count, dir_count, .. } => {
-                                        csv.push_str(&format!("dir,\"{}\",{},{},{},{},{}\n", path.replace('"', ""), allocated_size, logical_size, depth, file_count, dir_count));
-                                    }
-                                    types::TopItem::File { path, allocated_size, logical_size, .. } => {
-                                        csv.push_str(&format!("file,\"{}\",{},{},,,\n", path.replace('"', ""), allocated_size, logical_size));
-                                    }
-                                }
-                            }
-                            let fname = format!("speicherwald_top_{}.csv", id_csv);
-                            download_csv(&fname, &csv);
-                        }
-                    }, "CSV export" }
-                { err_top.read().as_ref().map(|e| rsx!(span { style: "color:#f87171;", " Fehler: {e}" })) }
-            }
-            // Visuelle Übersicht (Top-N Balken)
-            div { style: "margin-top:8px;",
-                { let show_count = *top_show.read(); top_items.read().iter().take(show_count).map(|it| {
-                    let nav_h = nav_history.clone();
-                    let (label, alloc) = match it {
-                        types::TopItem::Dir { path, allocated_size, .. } => (path.clone(), *allocated_size),
-                        types::TopItem::File { path, allocated_size, .. } => (path.clone(), *allocated_size),
-                    };
-                    let mut blocks: usize = 1;
-                    // FIX Bug #16: Add bounds check for float to usize cast
-                    if max_alloc_bar > 0 { 
-                        let calc = ((alloc as f64) / (max_alloc_bar as f64) * 40.0).round();
-                        blocks = if calc >= 0.0 && calc <= 1000.0 {
-                            (calc as usize).max(1).min(1000)
-                        } else {
-                            1
-                        };
-                    }
-                    let bar = "█".repeat(blocks);
-                    rsx!{ div { style: "display:flex;gap:10px;align-items:center;font-family:monospace;",
-                        span { style: "min-width:80px;color:#a0aec0;", "{fmt_bytes(alloc)}" }
-                        pre { style: "margin:0;line-height:1.1;color:#60a5fa;cursor:pointer;", onclick: move |_| { 
-                            let mut list_path = list_path.clone();
-                            list_path.set(Some(label.clone())); 
-                            let mut hist = nav_h.read().clone();
-                            if !hist.contains(&label) { hist.push(label.clone()); }
-                            let mut nav_h = nav_h.clone();
-                            nav_h.set(hist);
-                        }, "{bar}" }
-                        span { style: "color:#93c5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:480px;", "{label}" }
-                    } }
-                }) }
-            }
-            // Top-Tabelle
-            table { class: "responsive-table",
-                thead { tr {
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "type".to_string();
-                        let current_sort = top_sort.read().clone();
-                        let current_order = top_order.read().clone();
-                        let mut top_sort = top_sort.clone();
-                        let mut top_order = top_order.clone();
-                        if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
-                    }, "Typ" }
-                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "modified".to_string();
-                        let current_sort = top_sort.read().clone();
-                        let current_order = top_order.read().clone();
-                        let mut top_sort = top_sort.clone();
-                        let mut top_order = top_order.clone();
-                        if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
-                    }, "Zuletzt" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "allocated".to_string();
-                        let current_sort = top_sort.read().clone();
-                        let current_order = top_order.read().clone();
-                        let mut top_sort = top_sort.clone();
-                        let mut top_order = top_order.clone();
-                        if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
-                    }, "Allokiert" }
-                    th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "logical".to_string();
-                        let current_sort = top_sort.read().clone();
-                        let current_order = top_order.read().clone();
-                        let mut top_sort = top_sort.clone();
-                        let mut top_order = top_order.clone();
-                        if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
-                    }, "Logisch" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "name".to_string();
-                        let current_sort = top_sort.read().clone();
-                        let current_order = top_order.read().clone();
-                        let mut top_sort = top_sort.clone();
-                        let mut top_order = top_order.clone();
-                        if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
-                    }, "Pfad" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
-                } }
-                tbody {
-                    {
-                        let mut rows = top_items.read().clone();
-                        // Sort key
-                        rows.sort_by_key(|it| match it {
-                            types::TopItem::Dir { allocated_size, logical_size, mtime, .. } => match top_sort.read().as_str() {
-                                "logical" => *logical_size,
-                                "name" => 0,
-                                "type" => 0,
-                                "modified" => mtime.unwrap_or(0),
-                                _ => *allocated_size,
-                            },
-                            types::TopItem::File { allocated_size, logical_size, mtime, .. } => match top_sort.read().as_str() {
-                                "logical" => *logical_size,
-                                "name" => 0,
-                                "type" => 1,
-                                "modified" => mtime.unwrap_or(0),
-                                _ => *allocated_size,
-                            },
-                        });
-                        let current_sort = top_sort.read().clone();
-                        let current_order = top_order.read().clone();
-                        if current_sort == "name" {
-                            rows.sort_by_key(|it| match it { types::TopItem::Dir { path, .. } | types::TopItem::File { path, .. } => path.to_lowercase() });
-                        }
-                        if current_sort == "type" {
-                            rows.sort_by_key(|it| match it { types::TopItem::Dir { .. } => 0, _ => 1 });
-                        }
-                        if current_order == "desc" { rows.reverse(); }
-                        rows.into_iter().map(|it| {
-                            match it {
-                                types::TopItem::Dir { path, allocated_size, logical_size, mtime, .. } => {
-                                    let p_nav = path.clone();
-                                    let p_copy = path.clone();
-                                    let recent = mtime;
-                                    rsx!{ tr {
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
-                                        td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
-                                        td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
-                                        td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
-                                            let mut list_path = list_path.clone();
-                                            list_path.set(Some(p_nav.clone())); 
-                                            let mut hist = nav_history.read().clone();
-                                            if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
-                                            let mut nav_history = nav_history.clone();
-                                            nav_history.set(hist);
-                                        }, "{path}" }
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                            button { style: btn_style(), onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
-                                        }
-                                    } }
-                                },
-                                types::TopItem::File { path, allocated_size, logical_size, mtime, .. } => {
-                                    let recent = mtime;
-                                    rsx!{ tr {
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
-                                        td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
-                                        td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
-                                        td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{path}" }
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                            button { style: btn_style(), onclick: move |_| { copy_to_clipboard(path.clone()); }, "Kopieren" }
-                                        }
-                                    } }
-                                },
-                            }
-                        })
-                    }
-                }
-            }  // table close
-            // (removed recent panel UI)
-            // Baum-Ergebnisse (Detail-Liste)  
-            h3 { style: "margin-top:16px;", "Baum – Ergebnisse" }
-            table { class: "responsive-table",
-                thead { tr {
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "type".to_string();
-                        let current_sort = tree_sort_view.read().clone();
-                        let current_order = tree_order.read().clone();
-                        let mut tree_sort_view = tree_sort_view.clone();
-                        let mut tree_order = tree_order.clone();
-                        if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                    }, "Typ" }
-                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "modified".to_string();
-                        let current_sort = tree_sort_view.read().clone();
-                        let current_order = tree_order.read().clone();
-                        let mut tree_sort_view = tree_sort_view.clone();
-                        let mut tree_order = tree_order.clone();
-                        if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                    }, "Zuletzt" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "allocated".to_string();
-                        let current_sort = tree_sort_view.read().clone();
-                        let current_order = tree_order.read().clone();
-                        let mut tree_sort_view = tree_sort_view.clone();
-                        let mut tree_order = tree_order.clone();
-                        if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                    }, "Allokiert" }
-                    th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "logical".to_string();
-                        let current_sort = tree_sort_view.read().clone();
-                        let current_order = tree_order.read().clone();
-                        let mut tree_sort_view = tree_sort_view.clone();
-                        let mut tree_order = tree_order.clone();
-                        if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                    }, "Logisch" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "name".to_string();
-                        let current_sort = tree_sort_view.read().clone();
-                        let current_order = tree_order.read().clone();
-                        let mut tree_sort_view = tree_sort_view.clone();
-                        let mut tree_order = tree_order.clone();
-                        if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
-                    }, "Pfad" }
-                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
-                } }
-                tbody {
-                    { let mut rows = tree_items.read().clone();
-                      let current_sort = tree_sort_view.read().clone();
-                      let current_order = tree_order.read().clone();
-                      rows.sort_by_key(|n| match current_sort.as_str() {
-                          "logical" => n.logical_size,
-                          "name" => 0,
-                          "type" => if n.is_dir { 0 } else { 1 },
-                          "modified" => n.mtime.unwrap_or(0),
-                          _ => n.allocated_size,
-                      });
-                      if current_sort == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
-                      if current_order == "desc" { rows.reverse(); }
-                      rows.into_iter().map(|n| {
-                        let t = if n.is_dir { "Ordner" } else { "Datei" };
-                        let alloc = n.allocated_size; let logical = n.logical_size; let p = n.path.clone();
-                        let percent = if max_alloc_tree > 0 { ((alloc as f64) / (max_alloc_tree as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
-                        let bar_width = format!("width:{:.1}%;", percent);
-                        let p_nav = p.clone();
-                        let p_copy = p.clone();
-                        let p_for_move = p.clone();
-                        let move_signal = move_dialog.clone();
-                        let bar_class = if n.is_dir { "bar-fill-indigo" } else { "bar-fill-green" };
-                        let item_name = p
-                            .rsplit_once(['\\', '/'])
-                            .map(|(_, tail)| tail.to_string())
-                            .unwrap_or_else(|| {
-                                p_for_move
-                                    .trim_end_matches(['\\', '/'])
-                                    .rsplit_once(['\\', '/'])
-                                    .map(|(_, tail)| tail.to_string())
-                                    .unwrap_or_else(|| p_for_move.clone())
-                            });
-                        rsx!{ tr {
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
-                            td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
-                            td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
-                            td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
-                                let mut list_path = list_path.clone();
-                                list_path.set(Some(p_nav.clone())); 
-                                let mut hist = nav_history.read().clone();
-                                if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
-                                let mut nav_history = nav_history.clone();
-                                nav_history.set(hist);
-                            }, "{p}" }
-                            td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
-                                div { class: "bar-shell",
-                                    div { class: "{bar_class}", style: "{bar_width}" }
-                                }
-                            }
-                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                div { style: "display:flex;gap:8px;flex-wrap:wrap;",
-                                    button { class: "btn", onclick: {
-                                            let move_dialog = move_signal.clone();
-                                            let path = p_for_move.clone();
-                                            let name = item_name.clone();
-                                            move |_| {
-                                                let mut dlg = move_dialog.clone();
-                                                dlg.set(Some(MoveDialogState {
-                                                    source_path: path.clone(),
-                                                    source_name: name.clone(),
-                                                    logical_size: logical,
-                                                    allocated_size: alloc,
-                                                    destination: String::new(),
-                                                    selected_drive: None,
-                                                    remove_source: true,
-                                                    overwrite: false,
-                                                    in_progress: false,
-                                                    done: false,
-                                                    result: None,
-                                                    error: None,
-                                                }));
-                                            }
-                                        }, "Verschieben" }
-                                    button { class: "btn", onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
-                                }
-                            }
-                        } }
-                    }) }
-                }
+            div { class: "tab-nav",
+                div { class: "tab-item {if *active_tab.read() == \"explorer\" { \"active\" } else { \"\" }}", onclick: move |_| active_tab.set("explorer".into()), "Explorer" }
+                div { class: "tab-item {if *active_tab.read() == \"tree\" { \"active\" } else { \"\" }}", onclick: move |_| active_tab.set("tree".into()), "Baum-Analyse" }
+                div { class: "tab-item {if *active_tab.read() == \"stats\" { \"active\" } else { \"\" }}", onclick: move |_| active_tab.set("stats".into()), "Statistiken" }
+                div { class: "tab-item {if *active_tab.read() == \"log\" { \"active\" } else { \"\" }}", onclick: move |_| active_tab.set("log".into()), "Live Log" }
             }
 
-            // Explorer (Liste) – zeigt Kinder des aktuellen Pfads mit visuellen Größen-Balken
-            div { style: "margin-top:16px;",
-                div { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;",
-                    h3 { style: "margin:0 12px 0 0;", "Explorer (Liste)" }
-                    button { class: "btn", disabled: *loading_list.read(), onclick: {
-                        let f = do_load_list_btn.clone();
-                        move |_| (f.as_ref())()
-                    }, "Kinder laden" }
-                    span { "Pfad:" }
-                    input { value: "{list_path.read().as_ref().cloned().unwrap_or_default()}", placeholder: "leer = Wurzeln",
-                        oninput: move |e| {
-                            let value = e.value();
-                            let mut list_path = list_path.clone();
-                            let mut list_offset = list_offset.clone();
-                            list_path.set(if value.is_empty() { None } else { Some(value) });
-                            list_offset.set(0);
-                        }
-                    }
-                    span { "Sort:" }
-                    select { value: "{list_sort}", oninput: move |e| {
-                            let value = e.value();
-                            let mut list_sort = list_sort.clone();
-                            let mut list_offset = list_offset.clone();
-                            list_sort.set(value);
-                            list_offset.set(0);
-                        },
-                        option { value: "allocated", "Allokiert" }
-                        option { value: "logical", "Logisch" }
-                        option { value: "name", "Name" }
-                        option { value: "type", "Typ" }
-                        option { value: "modified", "Änderungsdatum" }
-                    }
-                    span { "Reihenfolge:" }
-                    select { value: "{list_order}", oninput: move |e| {
-                            let value = e.value();
-                            let mut list_order = list_order.clone();
-                            let mut list_offset = list_offset.clone();
-                            list_order.set(value);
-                            list_offset.set(0);
-                        },
-                        option { value: "desc", "Absteigend" }
-                        option { value: "asc", "Aufsteigend" }
-                    }
-                }
-                // Filter-Bereich
-                details { open: false, style: "margin-top:8px;padding:8px;background:#0f1117;border:1px solid #222533;border-radius:8px;",
-                    summary { style: "cursor:pointer;color:#e5e7eb;", "Filter & Suche" }
-                    div { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;",
-                        span { "Suche:" }
-                        input { 
-                            class: "form-control",
-                            value: "{search_query}", 
-                            placeholder: "Datei/Ordner suchen...",
-                            style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;",
-                            oninput: move |e| {
-                                let value = e.value();
-                                let mut search_query = search_query.clone();
-                                search_query.set(value);
-                            }
-                        }
-                        span { "Min. Größe:" }
-                        input { 
-                            class: "form-control",
-                            r#type: "number", 
-                            min: "0", 
-                            value: {
-                                let unit = min_size_unit.read().clone();
-                                let bytes = *min_size_filter.read();
-                                match unit.as_str() {
-                                    "mb" => {
-                                        let val = (bytes as f64 / (1024.0 * 1024.0)).max(0.0);
-                                        if (val.fract() - 0.0).abs() < f64::EPSILON {
-                                            format!("{:.0}", val)
-                                        } else {
-                                            format!("{:.2}", val)
-                                        }
+            { (*active_tab.read() == "explorer").then(|| rsx! {
+                // Breadcrumbs Navigation
+                { (!nav_history.read().is_empty()).then(|| rsx!{
+                    div { class: "breadcrumbs",
+                        span { class: "text-muted", "Navigationspfad:" }
+                        { nav_history.read().iter().enumerate().map(|(i, path)| {
+                            let p = path.clone();
+                            let nav_hist = nav_history.clone();
+                            let tree_path_nav = tree_path.clone();
+                            let list_path_nav = list_path.clone();
+                            let do_nav = do_load_tree.clone();
+                            rsx!{
+                                span { style: "display:flex;gap:4px;align-items:center;",
+                                    { (i > 0).then(|| rsx!(span { class: "sep", "›" })) }
+                                    button {
+                                        onclick: move |_| {
+                                            let new_path = if i == 0 { None } else { Some(p.clone()) };
+                                            let mut tree_path_nav = tree_path_nav.clone();
+                                            let mut list_path_nav = list_path_nav.clone();
+                                            let hist_slice = nav_hist.read()[..=i].to_vec();
+                                            let mut nav_hist = nav_hist.clone();
+                                            tree_path_nav.set(new_path.clone());
+                                            list_path_nav.set(new_path.clone());
+                                            nav_hist.set(hist_slice);
+                                            (do_nav.as_ref())();
+                                        },
+                                        "{path}"
                                     }
-                                    "gb" => {
-                                        let val = (bytes as f64 / (1024.0 * 1024.0 * 1024.0)).max(0.0);
-                                        if (val.fract() - 0.0).abs() < f64::EPSILON {
-                                            format!("{:.0}", val)
-                                        } else {
-                                            format!("{:.2}", val)
-                                        }
-                                    }
-                                    _ => bytes.max(0).to_string(),
-                                }
-                            },
-                            style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;width:120px;",
-                            oninput: move |e| {
-                                let value = e.value();
-                                let mut min_size_filter = min_size_filter.clone();
-                                let unit = min_size_unit.read().clone();
-                                if value.trim().is_empty() {
-                                    min_size_filter.set(0);
-                                } else if let Ok(v) = value.parse::<f64>() {
-                                    let multiplier = match unit.as_str() {
-                                        "mb" => 1024.0 * 1024.0,
-                                        "gb" => 1024.0 * 1024.0 * 1024.0,
-                                        _ => 1.0,
-                                    };
-                                    let bytes = (v.max(0.0) * multiplier).round() as i64;
-                                    min_size_filter.set(bytes);
                                 }
                             }
-                        }
-                        select { 
-                            value: "{min_size_unit}",
-                            style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;",
-                            oninput: move |e| {
-                                let mut unit = min_size_unit.clone();
-                                unit.set(e.value());
-                            },
-                            option { value: "b", "Bytes" }
-                            option { value: "mb", "→ MB" }
-                            option { value: "gb", "→ GB" }
-                        }
-                        span { "Typ:" }
-                        select { 
-                            value: "{file_type_filter}",
-                            style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;",
-                            oninput: move |e| { let mut file_type_filter = file_type_filter.clone(); file_type_filter.set(e.value()); },
-                            option { value: "all", "Alle" }
-                            option { value: "dirs", "Nur Ordner" }
-                            option { value: "files", "Nur Dateien" }
-                        }
-                        label { style: "display:flex;gap:6px;align-items:center;",
-                            input { 
-                                r#type: "checkbox", 
-                                checked: *show_hidden.read(),
-                                oninput: move |_| { let current = *show_hidden.read(); let mut show_hidden = show_hidden.clone(); show_hidden.set(!current); }
-                            }
-                            "Versteckte anzeigen"
-                        }
-                        button { 
-                            style: "background:#2563eb;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;",
+                        }) }
+                        button {
                             onclick: move |_| {
-                                let mut search_query = search_query.clone();
-                                let mut min_size_filter = min_size_filter.clone();
-                                let mut min_size_unit = min_size_unit.clone();
-                                let mut file_type_filter = file_type_filter.clone();
-                                let mut show_hidden = show_hidden.clone();
-                                search_query.set(String::new());
-                                min_size_filter.set(0);
-                                min_size_unit.set("b".to_string());
-                                file_type_filter.set("all".to_string());
-                                show_hidden.set(false);
+                                let mut nav_history = nav_history.clone();
+                                let mut tree_path = tree_path.clone();
+                                let mut list_path = list_path.clone();
+                                nav_history.set(Vec::new());
+                                tree_path.set(None);
+                                list_path.set(None);
+                                (do_load_tree.as_ref())();
                             },
-                            "Filter zurücksetzen"
+                            "Zurücksetzen"
                         }
                     }
-                }
-                // Pagination & Status
-                div { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;",
-                    span { "Limit:" }
-                    input { r#type: "number", min: "10", value: "{list_limit}", oninput: move |e| {
-                            let value = e.value();
-                            let mut list_limit = list_limit.clone();
-                            let mut list_offset = list_offset.clone();
-                            if let Ok(v) = value.parse::<i64>() {
-                                list_limit.set(v.max(10));
+                }) }
+                // Explorer (Liste) – zeigt Kinder des aktuellen Pfads mit visuellen Größen-Balken
+                div { style: "margin-top:16px;",
+                    div { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;",
+                        h3 { style: "margin:0 12px 0 0;", "Explorer (Liste)" }
+                        button { class: "btn", disabled: *loading_list.read(), onclick: {
+                            let f = do_load_list_btn.clone();
+                            move |_| (f.as_ref())()
+                        }, "Kinder laden" }
+                        span { "Pfad:" }
+                        input { value: "{list_path.read().as_ref().cloned().unwrap_or_default()}", placeholder: "leer = Wurzeln",
+                            oninput: move |e| {
+                                let value = e.value();
+                                let mut list_path = list_path.clone();
+                                let mut list_offset = list_offset.clone();
+                                list_path.set(if value.is_empty() { None } else { Some(value) });
                                 list_offset.set(0);
                             }
                         }
+                        span { "Sort:" }
+                        select { value: "{list_sort}", oninput: move |e| {
+                                let value = e.value();
+                                let mut list_sort = list_sort.clone();
+                                let mut list_offset = list_offset.clone();
+                                list_sort.set(value);
+                                list_offset.set(0);
+                            },
+                            option { value: "allocated", "Allokiert" }
+                            option { value: "logical", "Logisch" }
+                            option { value: "name", "Name" }
+                            option { value: "type", "Typ" }
+                            option { value: "modified", "Änderungsdatum" }
+                        }
+                        span { "Reihenfolge:" }
+                        select { value: "{list_order}", oninput: move |e| {
+                                let value = e.value();
+                                let mut list_order = list_order.clone();
+                                let mut list_offset = list_offset.clone();
+                                list_order.set(value);
+                                list_offset.set(0);
+                            },
+                            option { value: "desc", "Absteigend" }
+                            option { value: "asc", "Aufsteigend" }
+                        }
                     }
-                    // quick set buttons for common page sizes
-                    button { class: "btn", style: "padding:4px 8px;", onclick: {
-                        let list_limit = list_limit.clone(); let list_offset = list_offset.clone();
-                        move |_| { let mut list_limit = list_limit.clone(); let mut list_offset = list_offset.clone(); list_limit.set(50); list_offset.set(0); }
-                    }, "50" }
-                    button { class: "btn", style: "padding:4px 8px;", onclick: {
-                        let list_limit = list_limit.clone(); let list_offset = list_offset.clone();
-                        move |_| { let mut list_limit = list_limit.clone(); let mut list_offset = list_offset.clone(); list_limit.set(100); list_offset.set(0); }
-                    }, "100" }
-                    // Make Prev always visible and clickable; on first page show a toast instead of disabling.
-                    button { class: "btn btn-primary", r#type: "button", style: btn_primary_style(), onclick: {
-                        let list_offset = list_offset.clone();
-                        let list_limit = list_limit.clone();
-                        let list_has_more = list_has_more.clone();
-                        let list_path = list_path.clone();
-                        let nav_hist = nav_history.clone();
-                        let do_btn = do_load_list_btn.clone();
-                        move |_| {
-                            let current_offset = *list_offset.read();
-                            if current_offset <= 0 {
-                                // On first page: step back in navigation history if available, otherwise compute parent path
-                                let mut hist = nav_hist.read().clone();
-                                let mut nav_hist_mut = nav_hist.clone();
-                                let mut list_path_mut = list_path.clone();
-                                let mut list_offset_mut = list_offset.clone();
-                                if hist.is_empty() {
-                                    // Try compute parent path from current list_path
-                                    let current_path = list_path.read().clone();
-                                    if let Some(cur) = current_path {
-                                        let s = cur.trim_end_matches(['\\','/']).to_string();
-                                        let mut cut: Option<usize> = None;
-                                        for (i, ch) in s.char_indices().rev() { if ch == '\\' || ch == '/' { cut = Some(i); break; } }
-                                        let parent = cut.map(|i| s[..i].to_string());
-                                        if let Some(par) = parent.filter(|v| !v.is_empty() && !v.ends_with(':') && v.len() > 2) {
-                                            nav_hist_mut.set(vec![par.clone()]);
-                                            list_path_mut.set(Some(par));
-                                            list_offset_mut.set(0);
-                                            (do_btn.as_ref())();
-                                            show_toast("Zurück");
-                                            console::log_1(&"Prev click: computed parent".into());
+                    // Filter-Bereich
+                    details { open: false, style: "margin-top:8px;padding:8px;background:#0f1117;border:1px solid #222533;border-radius:8px;",
+                        summary { style: "cursor:pointer;color:#e5e7eb;", "Filter & Suche" }
+                        div { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;",
+                            span { "Suche:" }
+                            input { 
+                                class: "form-control",
+                                value: "{search_query}", 
+                                placeholder: "Datei/Ordner suchen...",
+                                style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;",
+                                oninput: move |e| {
+                                    let value = e.value();
+                                    let mut search_query = search_query.clone();
+                                    search_query.set(value);
+                                }
+                            }
+                            span { "Min. Größe:" }
+                            input { 
+                                class: "form-control",
+                                r#type: "number", 
+                                min: "0", 
+                                value: {
+                                    let unit = min_size_unit.read().clone();
+                                    let bytes = *min_size_filter.read();
+                                    match unit.as_str() {
+                                        "mb" => {
+                                            let val = (bytes as f64 / (1024.0 * 1024.0)).max(0.0);
+                                            if (val.fract() - 0.0).abs() < f64::EPSILON {
+                                                format!("{:.0}", val)
+                                            } else {
+                                                format!("{:.2}", val)
+                                            }
+                                        }
+                                        "gb" => {
+                                            let val = (bytes as f64 / (1024.0 * 1024.0 * 1024.0)).max(0.0);
+                                            if (val.fract() - 0.0).abs() < f64::EPSILON {
+                                                format!("{:.0}", val)
+                                            } else {
+                                                format!("{:.2}", val)
+                                            }
+                                        }
+                                        _ => bytes.max(0).to_string(),
+                                    }
+                                },
+                                style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;width:120px;",
+                                oninput: move |e| {
+                                    let value = e.value();
+                                    let mut min_size_filter = min_size_filter.clone();
+                                    let unit = min_size_unit.read().clone();
+                                    if value.trim().is_empty() {
+                                        min_size_filter.set(0);
+                                    } else if let Ok(v) = value.parse::<f64>() {
+                                        let multiplier = match unit.as_str() {
+                                            "mb" => 1024.0 * 1024.0,
+                                            "gb" => 1024.0 * 1024.0 * 1024.0,
+                                            _ => 1.0,
+                                        };
+                                        let bytes = (v.max(0.0) * multiplier).round() as i64;
+                                        min_size_filter.set(bytes);
+                                    }
+                                }
+                            }
+                            select { 
+                                value: "{min_size_unit}",
+                                style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;",
+                                oninput: move |e| {
+                                    let mut unit = min_size_unit.clone();
+                                    unit.set(e.value());
+                                },
+                                option { value: "b", "Bytes" }
+                                option { value: "mb", "→ MB" }
+                                option { value: "gb", "→ GB" }
+                            }
+                            span { "Typ:" }
+                            select { 
+                                value: "{file_type_filter}",
+                                style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:4px 8px;",
+                                oninput: move |e| { let mut file_type_filter = file_type_filter.clone(); file_type_filter.set(e.value()); },
+                                option { value: "all", "Alle" }
+                                option { value: "dirs", "Nur Ordner" }
+                                option { value: "files", "Nur Dateien" }
+                            }
+                            label { style: "display:flex;gap:6px;align-items:center;",
+                                input { 
+                                    r#type: "checkbox", 
+                                    checked: *show_hidden.read(),
+                                    oninput: move |_| { let current = *show_hidden.read(); let mut show_hidden = show_hidden.clone(); show_hidden.set(!current); }
+                                }
+                                "Versteckte anzeigen"
+                            }
+                            button { 
+                                style: "background:#2563eb;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;",
+                                onclick: move |_| {
+                                    let mut search_query = search_query.clone();
+                                    let mut min_size_filter = min_size_filter.clone();
+                                    let mut min_size_unit = min_size_unit.clone();
+                                    let mut file_type_filter = file_type_filter.clone();
+                                    let mut show_hidden = show_hidden.clone();
+                                    search_query.set(String::new());
+                                    min_size_filter.set(0);
+                                    min_size_unit.set("b".to_string());
+                                    file_type_filter.set("all".to_string());
+                                    show_hidden.set(false);
+                                },
+                                "Filter zurücksetzen"
+                            }
+                        }
+                    }
+                    // Pagination & Status
+                    div { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;",
+                        span { "Limit:" }
+                        input { r#type: "number", min: "10", value: "{list_limit}", oninput: move |e| {
+                                let value = e.value();
+                                let mut list_limit = list_limit.clone();
+                                let mut list_offset = list_offset.clone();
+                                if let Ok(v) = value.parse::<i64>() {
+                                    list_limit.set(v.max(10));
+                                    list_offset.set(0);
+                                }
+                            }
+                        }
+                        // quick set buttons for common page sizes
+                        button { class: "btn", style: "padding:4px 8px;", onclick: {
+                            let list_limit = list_limit.clone(); let list_offset = list_offset.clone();
+                            move |_| { let mut list_limit = list_limit.clone(); let mut list_offset = list_offset.clone(); list_limit.set(50); list_offset.set(0); }
+                        }, "50" }
+                        button { class: "btn", style: "padding:4px 8px;", onclick: {
+                            let list_limit = list_limit.clone(); let list_offset = list_offset.clone();
+                            move |_| { let mut list_limit = list_limit.clone(); let mut list_offset = list_offset.clone(); list_limit.set(100); list_offset.set(0); }
+                        }, "100" }
+                        // Make Prev always visible and clickable; on first page show a toast instead of disabling.
+                        button { class: "btn btn-primary", r#type: "button", style: btn_primary_style(), onclick: {
+                            let list_offset = list_offset.clone();
+                            let list_limit = list_limit.clone();
+                            let list_has_more = list_has_more.clone();
+                            let list_path = list_path.clone();
+                            let nav_hist = nav_history.clone();
+                            let do_btn = do_load_list_btn.clone();
+                            move |_| {
+                                let current_offset = *list_offset.read();
+                                if current_offset <= 0 {
+                                    // On first page: step back in navigation history if available, otherwise compute parent path
+                                    let mut hist = nav_hist.read().clone();
+                                    let mut nav_hist_mut = nav_hist.clone();
+                                    let mut list_path_mut = list_path.clone();
+                                    let mut list_offset_mut = list_offset.clone();
+                                    if hist.is_empty() {
+                                        // Try compute parent path from current list_path
+                                        let current_path = list_path.read().clone();
+                                        if let Some(cur) = current_path {
+                                            let s = cur.trim_end_matches(['\\','/']).to_string();
+                                            let mut cut: Option<usize> = None;
+                                            for (i, ch) in s.char_indices().rev() { if ch == '\\' || ch == '/' { cut = Some(i); break; } }
+                                            let parent = cut.map(|i| s[..i].to_string());
+                                            if let Some(par) = parent.filter(|v| !v.is_empty() && !v.ends_with(':') && v.len() > 2) {
+                                                nav_hist_mut.set(vec![par.clone()]);
+                                                list_path_mut.set(Some(par));
+                                                list_offset_mut.set(0);
+                                                (do_btn.as_ref())();
+                                                show_toast("Zurück");
+                                                console::log_1(&"Prev click: computed parent".into());
+                                            } else {
+                                                // No parent left → roots
+                                                nav_hist_mut.set(Vec::new());
+                                                list_path_mut.set(None);
+                                                list_offset_mut.set(0);
+                                                (do_btn.as_ref())();
+                                                show_toast("Zurück (Wurzeln)");
+                                                console::log_1(&"Prev click: to roots".into());
+                                            }
                                         } else {
-                                            // No parent left → roots
-                                            nav_hist_mut.set(Vec::new());
-                                            list_path_mut.set(None);
-                                            list_offset_mut.set(0);
-                                            (do_btn.as_ref())();
-                                            show_toast("Zurück (Wurzeln)");
-                                            console::log_1(&"Prev click: to roots".into());
+                                            show_toast("Keine vorherige Seite");
+                                            console::log_1(&format!("Prev click on page 1 (offset=0). No nav history. path=None").into());
                                         }
                                     } else {
-                                        show_toast("Keine vorherige Seite");
-                                        console::log_1(&format!("Prev click on page 1 (offset=0). No nav history. path=None").into());
+                                        // Remove current entry
+                                        let _ = hist.pop();
+                                        // Determine target: previous path or None (roots)
+                                        let target = hist.last().cloned();
+                                        nav_hist_mut.set(hist);
+                                        list_path_mut.set(target);
+                                        list_offset_mut.set(0);
+                                        (do_btn.as_ref())();
+                                        show_toast("Zurück");
+                                        console::log_1(&"Prev click: history back".into());
                                     }
                                 } else {
-                                    // Remove current entry
-                                    let _ = hist.pop();
-                                    // Determine target: previous path or None (roots)
-                                    let target = hist.last().cloned();
-                                    nav_hist_mut.set(hist);
-                                    list_path_mut.set(target);
-                                    list_offset_mut.set(0);
+                                    let old_off = current_offset;
+                                    let current_limit = *list_limit.read();
+                                    let old_page = (old_off / current_limit) + 1;
+                                    let new_off = (old_off - current_limit).max(0);
+                                    let mut list_has_more_mut = list_has_more.clone();
+                                    let mut list_offset_mut = list_offset.clone();
+                                    if new_off < current_offset { list_has_more_mut.set(true); }
+                                    console::log_1(&format!("Prev click: offset {} -> {} (limit {}), path={:?}", old_off, new_off, current_limit, list_path.read().clone()).into());
+                                    list_offset_mut.set(new_off);
+                                    // Trigger immediate reload for snappier UX
                                     (do_btn.as_ref())();
-                                    show_toast("Zurück");
-                                    console::log_1(&"Prev click: history back".into());
+                                    let new_page = (new_off / current_limit) + 1;
+                                    let msg = format!("Seite {} → {}", old_page, new_page);
+                                    show_toast(&msg);
                                 }
-                            } else {
-                                let old_off = current_offset;
-                                let current_limit = *list_limit.read();
-                                let old_page = (old_off / current_limit) + 1;
-                                let new_off = (old_off - current_limit).max(0);
-                                let mut list_has_more_mut = list_has_more.clone();
-                                let mut list_offset_mut = list_offset.clone();
-                                if new_off < current_offset { list_has_more_mut.set(true); }
-                                console::log_1(&format!("Prev click: offset {} -> {} (limit {}), path={:?}", old_off, new_off, current_limit, list_path.read().clone()).into());
-                                list_offset_mut.set(new_off);
-                                // Trigger immediate reload for snappier UX
-                                (do_btn.as_ref())();
-                                let new_page = (new_off / current_limit) + 1;
-                                let msg = format!("Seite {} → {}", old_page, new_page);
-                                show_toast(&msg);
                             }
-                        }
-                    }, "Vorherige Seite" }
-                    // Allow trying to load the next page even if `has_more` is currently false.
-                    // The effect re-fetch will update `list_has_more` and item list accordingly.
-                    button { class: "btn btn-primary", r#type: "button", style: btn_primary_style(), disabled: *loading_list.read(), title: if *loading_list.read() { "Laden läuft…" } else { "Nächste Seite laden" }, onclick: next_page, "Nächste Seite" }
-                    span { "Seite: {(*list_offset.read() / *list_limit.read()) + 1} (Offset: {*list_offset.read()})" }
-                    span { "Einträge (Seite): {list_items.len()}" }
-                    button { class: "btn", onclick: {
-                            let list_items = list_items.clone();
-                            let search_query = search_query.clone();
-                            let min_size_filter = min_size_filter.clone();
-                            let file_type_filter = file_type_filter.clone();
-                            let show_hidden = show_hidden.clone();
-                            move |_| {
-                                let mut csv = String::from("type,name,path,allocated,logical,mtime\n");
-                                let query_val = search_query.read().to_lowercase();
-                                let min_size_val = min_size_filter.read().clone();
-                                let type_filter_val = file_type_filter.read().clone();
-                                let show_hidden_val = *show_hidden.read();
-                                for it in list_items.read().iter().filter(|it| {
-                                    let name_match = if query_val.is_empty() { true } else { match it { types::ListItem::Dir { name, .. } => name.to_lowercase().contains(&query_val), types::ListItem::File { name, .. } => name.to_lowercase().contains(&query_val), } };
-                                    let size_match = match it { types::ListItem::Dir { allocated_size, .. } => *allocated_size >= min_size_val, types::ListItem::File { allocated_size, .. } => *allocated_size >= min_size_val, };
-                                    let type_match = match type_filter_val.as_str() { "dirs" => matches!(it, types::ListItem::Dir { .. }), "files" => matches!(it, types::ListItem::File { .. }), _ => true };
-                                    let hidden_match = if !show_hidden_val { match it { types::ListItem::Dir { name, .. } => !name.starts_with('.'), types::ListItem::File { name, .. } => !name.starts_with('.'), } } else { true };
-                                    name_match && size_match && type_match && hidden_match
-                                }) {
-                                    match it {
-                                        types::ListItem::Dir { name, path, allocated_size, logical_size, mtime, .. } => {
-                                            csv.push_str(&format!("dir,\"{}\",\"{}\",{},{},{}\n", name.replace('"', ""), path.replace('"', ""), allocated_size, logical_size, mtime.unwrap_or(0)));
+                        }, "Vorherige Seite" }
+                        // Allow trying to load the next page even if `has_more` is currently false.
+                        // The effect re-fetch will update `list_has_more` and item list accordingly.
+                        button { class: "btn btn-primary", r#type: "button", style: btn_primary_style(), disabled: *loading_list.read(), title: if *loading_list.read() { "Laden läuft…" } else { "Nächste Seite laden" }, onclick: next_page, "Nächste Seite" }
+                        span { "Seite: {(*list_offset.read() / *list_limit.read()) + 1} (Offset: {*list_offset.read()})" }
+                        span { "Einträge (Seite): {list_items.len()}" }
+                        button { class: "btn", onclick: {
+                                let list_items = list_items.clone();
+                                let search_query = search_query.clone();
+                                let min_size_filter = min_size_filter.clone();
+                                let file_type_filter = file_type_filter.clone();
+                                let show_hidden = show_hidden.clone();
+                                move |_| {
+                                    let mut csv = String::from("type,name,path,allocated,logical,mtime\n");
+                                    let query_val = search_query.read().to_lowercase();
+                                    let min_size_val = min_size_filter.read().clone();
+                                    let type_filter_val = file_type_filter.read().clone();
+                                    let show_hidden_val = *show_hidden.read();
+                                    for it in list_items.read().iter().filter(|it| {
+                                        let name_match = if query_val.is_empty() { true } else { match it { types::ListItem::Dir { name, .. } => name.to_lowercase().contains(&query_val), types::ListItem::File { name, .. } => name.to_lowercase().contains(&query_val), } };
+                                        let size_match = match it { types::ListItem::Dir { allocated_size, .. } => *allocated_size >= min_size_val, types::ListItem::File { allocated_size, .. } => *allocated_size >= min_size_val, };
+                                        let type_match = match type_filter_val.as_str() { "dirs" => matches!(it, types::ListItem::Dir { .. }), "files" => matches!(it, types::ListItem::File { .. }), _ => true };
+                                        let hidden_match = if !show_hidden_val { match it { types::ListItem::Dir { name, .. } => !name.starts_with('.'), types::ListItem::File { name, .. } => !name.starts_with('.'), } } else { true };
+                                        name_match && size_match && type_match && hidden_match
+                                    }) {
+                                        match it {
+                                            types::ListItem::Dir { name, path, allocated_size, logical_size, mtime, .. } => {
+                                                csv.push_str(&format!("dir,\"{}\",\"{}\",{},{},{}\n", name.replace('"', ""), path.replace('"', ""), allocated_size, logical_size, mtime.unwrap_or(0)));
+                                            }
+                                            types::ListItem::File { name, path, allocated_size, logical_size, mtime, .. } => {
+                                                csv.push_str(&format!("file,\"{}\",\"{}\",{},{},{}\n", name.replace('"', ""), path.replace('"', ""), allocated_size, logical_size, mtime.unwrap_or(0)));
+                                            }
                                         }
-                                        types::ListItem::File { name, path, allocated_size, logical_size, mtime, .. } => {
-                                            csv.push_str(&format!("file,\"{}\",\"{}\",{},{},{}\n", name.replace('"', ""), path.replace('"', ""), allocated_size, logical_size, mtime.unwrap_or(0)));
+                                    }
+                                    download_csv("speicherwald_list.csv", &csv);
+                                }
+                            }, "CSV export" }
+                        { (*loading_list.read()).then(|| rsx!(span { class: "spinner", "" })) }
+                        { err_list.read().as_ref().map(|e| rsx!(span { class: "text-danger", " Fehler: {e}" })) }
+                    }
+    
+                    { (list_items.read().is_empty() && list_path.read().is_none() && !*loading_list.read()).then(|| rsx!(
+                        div { class: "alert alert-warning", "Keine Daten für Wurzeln – der Scan läuft eventuell noch oder die Root-Knoten wurden noch nicht gespeichert. Versuche es gleich erneut oder nutze Baum/Top." }
+                    )) }
+                }
+                table { class: "responsive-table",
+                    thead { tr {
+                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "name".to_string();
+                            let current_sort = list_sort.read().clone();
+                            let current_order = list_order.read().clone();
+                            let mut list_sort = list_sort.clone();
+                            let mut list_order = list_order.clone();
+                            let mut list_offset = list_offset.clone();
+                            if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                            list_offset.set(0);
+                        }, "Name" }
+                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "type".to_string();
+                            let current_sort = list_sort.read().clone();
+                            let current_order = list_order.read().clone();
+                            let mut list_sort = list_sort.clone();
+                            let mut list_order = list_order.clone();
+                            let mut list_offset = list_offset.clone();
+                            if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                            list_offset.set(0);
+                        }, "Typ" }
+                        th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "modified".to_string();
+                            let current_sort = list_sort.read().clone();
+                            let current_order = list_order.read().clone();
+                            let mut list_sort = list_sort.clone();
+                            let mut list_order = list_order.clone();
+                            let mut list_offset = list_offset.clone();
+                            if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                            list_offset.set(0);
+                        }, "Zuletzt" }
+                        th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "allocated".to_string();
+                            let current_sort = list_sort.read().clone();
+                            let current_order = list_order.read().clone();
+                            let mut list_sort = list_sort.clone();
+                            let mut list_order = list_order.clone();
+                            let mut list_offset = list_offset.clone();
+                            if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                            list_offset.set(0);
+                        }, "Allokiert" }
+                        th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "logical".to_string();
+                            let current_sort = list_sort.read().clone();
+                            let current_order = list_order.read().clone();
+                            let mut list_sort = list_sort.clone();
+                            let mut list_order = list_order.clone();
+                            let mut list_offset = list_offset.clone();
+                            if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
+                            list_offset.set(0);
+                        }, "Logisch" }
+                        th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
+                    } }
+                    tbody {
+                        { 
+                          let query_val = search_query.read().to_lowercase();
+                          let min_size_val = min_size_filter.read().clone();
+                          let type_filter_val = file_type_filter.read().clone();
+                          let show_hidden_val = *show_hidden.read();
+                          let filtered: Vec<_> = list_items.read().iter()
+                            .filter(|it| {
+                                // Suchfilter
+                                let name_match = if query_val.is_empty() { 
+                                    true 
+                                } else {
+                                    match it {
+                                        types::ListItem::Dir { name, .. } => name.to_lowercase().contains(&query_val),
+                                        types::ListItem::File { name, .. } => name.to_lowercase().contains(&query_val),
+                                    }
+                                };
+                                
+                                // Größenfilter
+                                let size_match = match it {
+                                    types::ListItem::Dir { allocated_size, .. } => *allocated_size >= min_size_val,
+                                    types::ListItem::File { allocated_size, .. } => *allocated_size >= min_size_val,
+                                };
+                                
+                                // Typfilter
+                                let type_match = match type_filter_val.as_str() {
+                                    "dirs" => matches!(it, types::ListItem::Dir { .. }),
+                                    "files" => matches!(it, types::ListItem::File { .. }),
+                                    _ => true,
+                                };
+                                
+                                // Versteckte Dateien Filter
+                                let hidden_match = if !show_hidden_val {
+                                    match it {
+                                        types::ListItem::Dir { name, .. } => !name.starts_with('.'),
+                                        types::ListItem::File { name, .. } => !name.starts_with('.'),
+                                    }
+                                } else {
+                                    true
+                                };
+                                
+                                name_match && size_match && type_match && hidden_match
+                            })
+                            .cloned()
+                            .collect();
+                          
+                          filtered.into_iter().map(|it| {
+                            match it {
+                                types::ListItem::Dir { name, path, allocated_size, logical_size, mtime, .. } => {
+                                    let alloc = allocated_size; let logical = logical_size; let p = path.clone();
+                                    let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
+                                    let bar_width = format!("width:{:.1}%;", percent);
+                                    let recent = mtime;
+                                    let move_signal = move_dialog.clone();
+                                    let path_for_dialog = p.clone();
+                                    let name_for_dialog = name.clone();
+                                    rsx!{ tr {
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
+                                            let hist = nav_history.read().clone();
+                                            let mut list_path = list_path.clone();
+                                            list_path.set(Some(p.clone())); 
+                                            let mut hist = hist;
+                                            if !hist.contains(&p) { hist.push(p.clone()); }
+                                            let mut nav_history = nav_history.clone();
+                                            nav_history.set(hist);
+                                        }, "{name}" }
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
+                                        td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
+                                        td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
+                                        td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
+                                        td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
+                                            div { class: "bar-shell", 
+                                                div { class: "bar-fill-blue", style: "{bar_width}" }
+                                            }
+                                        }
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                            div { style: "display:flex;gap:8px;flex-wrap:wrap;",
+                                                button { class: "btn", onclick: {
+                                                        let signal = move_signal.clone();
+                                                        let path_value = path_for_dialog.clone();
+                                                        let label_value = name_for_dialog.clone();
+                                                        move |_| {
+                                                            let mut dlg = signal.clone();
+                                                            dlg.set(Some(MoveDialogState {
+                                                                source_path: path_value.clone(),
+                                                                source_name: label_value.clone(),
+                                                                logical_size: logical,
+                                                                allocated_size: alloc,
+                                                                destination: String::new(),
+                                                                selected_drive: None,
+                                                                remove_source: true,
+                                                                overwrite: false,
+                                                                in_progress: false,
+                                                                done: false,
+                                                                result: None,
+                                                                error: None,
+                                                            }));
+                                                        }
+                                                    }, "Verschieben" }
+                                                button { class: "btn", onclick: move |_| { copy_to_clipboard(path_for_dialog.clone()); }, "Kopieren" }
+                                            }
+                                        }
+                                    } }
+                                }
+                                types::ListItem::File { name, path, allocated_size, logical_size, mtime, .. } => {
+                                    let alloc = allocated_size; let logical = logical_size;
+                                    let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
+                                    let bar_width = format!("width:{:.1}%;", percent);
+                                    let recent = mtime;
+                                    let move_signal = move_dialog.clone();
+                                    let path_for_dialog = path.clone();
+                                    let name_for_dialog = name.clone();
+                                    rsx!{ tr {
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name}" }
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
+                                        td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
+                                        td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
+                                        td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
+                                        td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
+                                            div { class: "bar-shell", 
+                                                div { class: "bar-fill-green", style: "{bar_width}" }
+                                            }
+                                        }
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                            div { style: "display:flex;gap:8px;flex-wrap:wrap;",
+                                                button { class: "btn", onclick: {
+                                                        let signal = move_signal.clone();
+                                                        let path_value = path_for_dialog.clone();
+                                                        let label_value = name_for_dialog.clone();
+                                                        move |_| {
+                                                            let mut dlg = signal.clone();
+                                                            dlg.set(Some(MoveDialogState {
+                                                                source_path: path_value.clone(),
+                                                                source_name: label_value.clone(),
+                                                                logical_size: logical,
+                                                                allocated_size: alloc,
+                                                                destination: String::new(),
+                                                                selected_drive: None,
+                                                                remove_source: true,
+                                                                overwrite: false,
+                                                                in_progress: false,
+                                                                done: false,
+                                                                result: None,
+                                                                error: None,
+                                                            }));
+                                                        }
+                                                    }, "Verschieben" }
+                                                button { class: "btn", onclick: move |_| { copy_to_clipboard(path_for_dialog.clone()); }, "Kopieren" }
+                                            }
+                                        }
+                                    } }
+                                }
+                            }
+                        }) }
+                    }
+                }  // table close
+            }) }
+
+            { (*active_tab.read() == "tree").then(|| rsx! {
+                div { style: "margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;",
+                    button { class: "btn", onclick: move |_| (do_load_tree_btn.as_ref())(), "Baum laden" }
+                    span { "Pfad:" }
+                    input { value: "{tree_path.read().as_ref().cloned().unwrap_or_default()}", placeholder: "leer = alle Wurzeln",
+                        oninput: move |e| {
+                            let value = e.value();
+                            let mut tree_path = tree_path.clone();
+                            tree_path.set(if value.is_empty() { None } else { Some(value) });
+                        }
+                    }
+                    span { "Tiefe:" }
+                    input { r#type: "number", min: "1", value: "{tree_depth}", oninput: move |e| {
+                            let value = e.value();
+                            let mut tree_depth = tree_depth.clone();
+                            if let Ok(v) = value.parse::<i64>() { tree_depth.set(v.max(1)); }
+                        }
+                    }
+                    span { "Sort:" }
+                    select { value: "{tree_sort}", oninput: move |e| { let mut tree_sort = tree_sort.clone(); tree_sort.set(e.value()); },
+                        option { value: "size", "Größe" }
+                        option { value: "name", "Name" }
+                    }
+                    span { "Limit:" }
+                    input { r#type: "number", min: "10", value: "{tree_limit}", oninput: move |e| {
+                            let value = e.value();
+                            let mut tree_limit = tree_limit.clone();
+                            if let Ok(v) = value.parse::<i64>() { tree_limit.set(v.max(10)); }
+                        }
+                    }
+                    button { class: "btn", onclick: more_tree, "Mehr" }
+                    button { class: "btn", onclick: less_tree, "Weniger" }
+                    label { style: "display:flex;gap:6px;align-items:center;", input { r#type: "checkbox", checked: *live_update.read(), oninput: move |_| { let current = *live_update.read(); let mut live_update = live_update.clone(); live_update.set(!current); } } " Live-Update Tabellen" }
+                    span { "Einträge: {tree_items.len()}" }
+                    { (*loading_tree.read()).then(|| rsx!(span { class: "spinner", "" })) }
+                    { err_tree.read().as_ref().map(|e| rsx!(span { class: "text-danger", " Fehler: {e}" })) }
+                }
+                h3 { style: "margin-top:16px;", "Baum – Ergebnisse" }
+                table { class: "responsive-table",
+                    thead { tr {
+                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "type".to_string();
+                            let current_sort = tree_sort_view.read().clone();
+                            let current_order = tree_order.read().clone();
+                            let mut tree_sort_view = tree_sort_view.clone();
+                            let mut tree_order = tree_order.clone();
+                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                        }, "Typ" }
+                        th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "modified".to_string();
+                            let current_sort = tree_sort_view.read().clone();
+                            let current_order = tree_order.read().clone();
+                            let mut tree_sort_view = tree_sort_view.clone();
+                            let mut tree_order = tree_order.clone();
+                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                        }, "Zuletzt" }
+                        th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "allocated".to_string();
+                            let current_sort = tree_sort_view.read().clone();
+                            let current_order = tree_order.read().clone();
+                            let mut tree_sort_view = tree_sort_view.clone();
+                            let mut tree_order = tree_order.clone();
+                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                        }, "Allokiert" }
+                        th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "logical".to_string();
+                            let current_sort = tree_sort_view.read().clone();
+                            let current_order = tree_order.read().clone();
+                            let mut tree_sort_view = tree_sort_view.clone();
+                            let mut tree_order = tree_order.clone();
+                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                        }, "Logisch" }
+                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "name".to_string();
+                            let current_sort = tree_sort_view.read().clone();
+                            let current_order = tree_order.read().clone();
+                            let mut tree_sort_view = tree_sort_view.clone();
+                            let mut tree_order = tree_order.clone();
+                            if current_sort == key { tree_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { tree_sort_view.set(key); tree_order.set("desc".into()); }
+                        }, "Pfad" }
+                        th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
+                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
+                    } }
+                    tbody {
+                        { let mut rows = tree_items.read().clone();
+                          let current_sort = tree_sort_view.read().clone();
+                          let current_order = tree_order.read().clone();
+                          rows.sort_by_key(|n| match current_sort.as_str() {
+                              "logical" => n.logical_size,
+                              "name" => 0,
+                              "type" => if n.is_dir { 0 } else { 1 },
+                              "modified" => n.mtime.unwrap_or(0),
+                              _ => n.allocated_size,
+                          });
+                          if current_sort == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
+                          if current_order == "desc" { rows.reverse(); }
+                          rows.into_iter().map(|n| {
+                            let t = if n.is_dir { "Ordner" } else { "Datei" };
+                            let alloc = n.allocated_size; let logical = n.logical_size; let p = n.path.clone();
+                            let percent = if max_alloc_tree > 0 { ((alloc as f64) / (max_alloc_tree as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
+                            let bar_width = format!("width:{:.1}%;", percent);
+                            let p_nav = p.clone();
+                            let p_copy = p.clone();
+                            let p_for_move = p.clone();
+                            let move_signal = move_dialog.clone();
+                            let bar_class = if n.is_dir { "bar-fill-indigo" } else { "bar-fill-green" };
+                            let item_name = p
+                                .rsplit_once(['\\', '/'])
+                                .map(|(_, tail)| tail.to_string())
+                                .unwrap_or_else(|| {
+                                    p_for_move
+                                        .trim_end_matches(['\\', '/'])
+                                        .rsplit_once(['\\', '/'])
+                                        .map(|(_, tail)| tail.to_string())
+                                        .unwrap_or_else(|| p_for_move.clone())
+                                });
+                            rsx!{ tr {
+                                td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
+                                td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
+                                td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
+                                td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
+                                td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
+                                    let mut list_path = list_path.clone();
+                                    list_path.set(Some(p_nav.clone())); 
+                                    let mut hist = nav_history.read().clone();
+                                    if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
+                                    let mut nav_history = nav_history.clone();
+                                    nav_history.set(hist);
+                                }, "{p}" }
+                                td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
+                                    div { class: "bar-shell",
+                                        div { class: "{bar_class}", style: "{bar_width}" }
+                                    }
+                                }
+                                td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                    div { style: "display:flex;gap:8px;flex-wrap:wrap;",
+                                        button { class: "btn", onclick: {
+                                                let move_dialog = move_signal.clone();
+                                                let path = p_for_move.clone();
+                                                let name = item_name.clone();
+                                                move |_| {
+                                                    let mut dlg = move_dialog.clone();
+                                                    dlg.set(Some(MoveDialogState {
+                                                        source_path: path.clone(),
+                                                        source_name: name.clone(),
+                                                        logical_size: logical,
+                                                        allocated_size: alloc,
+                                                        destination: String::new(),
+                                                        selected_drive: None,
+                                                        remove_source: true,
+                                                        overwrite: false,
+                                                        in_progress: false,
+                                                        done: false,
+                                                        result: None,
+                                                        error: None,
+                                                    }));
+                                                }
+                                            }, "Verschieben" }
+                                        button { class: "btn", onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
+                                    }
+                                }
+                            } }
+                        }) }
+                    }
+                }
+            }) }
+
+            { (*active_tab.read() == "stats").then(|| rsx! {
+                div { style: "margin-top:16px;padding:16px;background:#0f1117;border:1px solid #222533;border-radius:8px;",
+                    h3 { "Export" }
+                    div { style: "display:flex;gap:12px;margin-top:8px;",
+                         button { class: "btn", onclick: {
+                                let id_export = id.clone();
+                                move |_| { trigger_download(&id_export, "csv"); }
+                            }, "CSV Export (Gesamter Scan)" }
+                         button { class: "btn", onclick: {
+                                let id_export = id.clone();
+                                move |_| { trigger_download(&id_export, "json"); }
+                            }, "JSON Export (Rohdaten)" }
+                    }
+                }
+                div { style: "margin-top:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;",
+                    span { "Top-N:" }
+                    select { value: "{top_scope}", oninput: {
+                            let id = id.clone();
+                            let top_scope = top_scope.clone();
+                            let top_show = top_show.clone();
+                            let top_items = top_items.clone();
+                            move |e: Event<FormData>| {
+                            let value = e.value();
+                            let mut top_scope = top_scope.clone();
+                            let mut top_show2 = top_show.clone();
+                            top_scope.set(value.clone());
+                            top_show2.set(15);
+                            let top_items2 = top_items.clone();
+                            let id_top = id.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let mut top_items2 = top_items2.clone();
+                                let q = api::TopQuery { scope: Some(value), limit: Some(100) };
+                                if let Ok(list) = api::get_top(&id_top, &q).await { top_items2.set(list); }
+                            });
+                        }
+                        },
+                        option { value: "dirs", "Ordner" }
+                        option { value: "files", "Dateien" }
+                    }
+                    button { style: btn_style(), onclick: top_less, "Weniger" }
+                    button { style: btn_style(), onclick: top_more, "Mehr" }
+                    button { class: "btn", onclick: {
+                            let top_items = top_items.clone();
+                            let top_show = top_show.clone();
+                            let id_csv = id.clone();
+                            move |_| {
+                                // FIX Bug #37: Note that this builds CSV in memory
+                                // For very large exports, consider using server-side streaming
+                                let mut csv = String::from("type,path,allocated,logical,depth,file_count,dir_count\n");
+                                let show_count = *top_show.read();
+                                for it in top_items.read().iter().take(show_count) {
+                                    match it {
+                                        types::TopItem::Dir { path, allocated_size, logical_size, depth, file_count, dir_count, .. } => {
+                                            csv.push_str(&format!("dir,\"{}\",{},{},{},{},{}\n", path.replace('"', ""), allocated_size, logical_size, depth, file_count, dir_count));
+                                        }
+                                        types::TopItem::File { path, allocated_size, logical_size, .. } => {
+                                            csv.push_str(&format!("file,\"{}\",{},{},,,\n", path.replace('"', ""), allocated_size, logical_size));
                                         }
                                     }
                                 }
-                                download_csv("speicherwald_list.csv", &csv);
+                                let fname = format!("speicherwald_top_{}.csv", id_csv);
+                                download_csv(&fname, &csv);
                             }
                         }, "CSV export" }
-                    { (*loading_list.read()).then(|| rsx!(span { class: "spinner", "" })) }
-                    { err_list.read().as_ref().map(|e| rsx!(span { class: "text-danger", " Fehler: {e}" })) }
+                    { err_top.read().as_ref().map(|e| rsx!(span { style: "color:#f87171;", " Fehler: {e}" })) }
                 }
-
-                { (list_items.read().is_empty() && list_path.read().is_none() && !*loading_list.read()).then(|| rsx!(
-                    div { class: "alert alert-warning", "Keine Daten für Wurzeln – der Scan läuft eventuell noch oder die Root-Knoten wurden noch nicht gespeichert. Versuche es gleich erneut oder nutze Baum/Top." }
-                )) }
-            }
-            table { class: "responsive-table",
-                thead { tr {
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "name".to_string();
-                        let current_sort = list_sort.read().clone();
-                        let current_order = list_order.read().clone();
-                        let mut list_sort = list_sort.clone();
-                        let mut list_order = list_order.clone();
-                        let mut list_offset = list_offset.clone();
-                        if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
-                        list_offset.set(0);
-                    }, "Name" }
-                    th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "type".to_string();
-                        let current_sort = list_sort.read().clone();
-                        let current_order = list_order.read().clone();
-                        let mut list_sort = list_sort.clone();
-                        let mut list_order = list_order.clone();
-                        let mut list_offset = list_offset.clone();
-                        if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
-                        list_offset.set(0);
-                    }, "Typ" }
-                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "modified".to_string();
-                        let current_sort = list_sort.read().clone();
-                        let current_order = list_order.read().clone();
-                        let mut list_sort = list_sort.clone();
-                        let mut list_order = list_order.clone();
-                        let mut list_offset = list_offset.clone();
-                        if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
-                        list_offset.set(0);
-                    }, "Zuletzt" }
-                    th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "allocated".to_string();
-                        let current_sort = list_sort.read().clone();
-                        let current_order = list_order.read().clone();
-                        let mut list_sort = list_sort.clone();
-                        let mut list_order = list_order.clone();
-                        let mut list_offset = list_offset.clone();
-                        if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
-                        list_offset.set(0);
-                    }, "Allokiert" }
-                    th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
-                        let key = "logical".to_string();
-                        let current_sort = list_sort.read().clone();
-                        let current_order = list_order.read().clone();
-                        let mut list_sort = list_sort.clone();
-                        let mut list_order = list_order.clone();
-                        let mut list_offset = list_offset.clone();
-                        if current_sort == key { list_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { list_sort.set(key); list_order.set("desc".into()); }
-                        list_offset.set(0);
-                    }, "Logisch" }
-                    th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Visual" }
-                } }
-                tbody {
-                    { 
-                      let query_val = search_query.read().to_lowercase();
-                      let min_size_val = min_size_filter.read().clone();
-                      let type_filter_val = file_type_filter.read().clone();
-                      let show_hidden_val = *show_hidden.read();
-                      let filtered: Vec<_> = list_items.read().iter()
-                        .filter(|it| {
-                            // Suchfilter
-                            let name_match = if query_val.is_empty() { 
-                                true 
+                // Visuelle Übersicht (Top-N Balken)
+                div { style: "margin-top:8px;",
+                    { let show_count = *top_show.read(); top_items.read().iter().take(show_count).map(|it| {
+                        let nav_h = nav_history.clone();
+                        let (label, alloc) = match it {
+                            types::TopItem::Dir { path, allocated_size, .. } => (path.clone(), *allocated_size),
+                            types::TopItem::File { path, allocated_size, .. } => (path.clone(), *allocated_size),
+                        };
+                        let mut blocks: usize = 1;
+                        // FIX Bug #16: Add bounds check for float to usize cast
+                        if max_alloc_bar > 0 { 
+                            let calc = ((alloc as f64) / (max_alloc_bar as f64) * 40.0).round();
+                            blocks = if calc >= 0.0 && calc <= 1000.0 {
+                                (calc as usize).max(1).min(1000)
                             } else {
-                                match it {
-                                    types::ListItem::Dir { name, .. } => name.to_lowercase().contains(&query_val),
-                                    types::ListItem::File { name, .. } => name.to_lowercase().contains(&query_val),
-                                }
+                                1
                             };
-                            
-                            // Größenfilter
-                            let size_match = match it {
-                                types::ListItem::Dir { allocated_size, .. } => *allocated_size >= min_size_val,
-                                types::ListItem::File { allocated_size, .. } => *allocated_size >= min_size_val,
-                            };
-                            
-                            // Typfilter
-                            let type_match = match type_filter_val.as_str() {
-                                "dirs" => matches!(it, types::ListItem::Dir { .. }),
-                                "files" => matches!(it, types::ListItem::File { .. }),
-                                _ => true,
-                            };
-                            
-                            // Versteckte Dateien Filter
-                            let hidden_match = if !show_hidden_val {
-                                match it {
-                                    types::ListItem::Dir { name, .. } => !name.starts_with('.'),
-                                    types::ListItem::File { name, .. } => !name.starts_with('.'),
-                                }
-                            } else {
-                                true
-                            };
-                            
-                            name_match && size_match && type_match && hidden_match
-                        })
-                        .cloned()
-                        .collect();
-                      
-                      filtered.into_iter().map(|it| {
-                        match it {
-                            types::ListItem::Dir { name, path, allocated_size, logical_size, mtime, .. } => {
-                                let alloc = allocated_size; let logical = logical_size; let p = path.clone();
-                                let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
-                                let bar_width = format!("width:{:.1}%;", percent);
-                                let recent = mtime;
-                                let move_signal = move_dialog.clone();
-                                let path_for_dialog = p.clone();
-                                let name_for_dialog = name.clone();
-                                rsx!{ tr {
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
-                                        let hist = nav_history.read().clone();
-                                        let mut list_path = list_path.clone();
-                                        list_path.set(Some(p.clone())); 
-                                        let mut hist = hist;
-                                        if !hist.contains(&p) { hist.push(p.clone()); }
-                                        let mut nav_history = nav_history.clone();
-                                        nav_history.set(hist);
-                                    }, "{name}" }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
-                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
-                                    td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
-                                    td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
-                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
-                                        div { class: "bar-shell", 
-                                            div { class: "bar-fill-blue", style: "{bar_width}" }
-                                        }
-                                    }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                        div { style: "display:flex;gap:8px;flex-wrap:wrap;",
-                                            button { class: "btn", onclick: {
-                                                    let signal = move_signal.clone();
-                                                    let path_value = path_for_dialog.clone();
-                                                    let label_value = name_for_dialog.clone();
-                                                    move |_| {
-                                                        let mut dlg = signal.clone();
-                                                        dlg.set(Some(MoveDialogState {
-                                                            source_path: path_value.clone(),
-                                                            source_name: label_value.clone(),
-                                                            logical_size: logical,
-                                                            allocated_size: alloc,
-                                                            destination: String::new(),
-                                                            selected_drive: None,
-                                                            remove_source: true,
-                                                            overwrite: false,
-                                                            in_progress: false,
-                                                            done: false,
-                                                            result: None,
-                                                            error: None,
-                                                        }));
-                                                    }
-                                                }, "Verschieben" }
-                                            button { class: "btn", onclick: move |_| { copy_to_clipboard(path_for_dialog.clone()); }, "Kopieren" }
-                                        }
-                                    }
-                                } }
-                            }
-                            types::ListItem::File { name, path, allocated_size, logical_size, mtime, .. } => {
-                                let alloc = allocated_size; let logical = logical_size;
-                                let percent = if max_alloc_list > 0 { ((alloc as f64) / (max_alloc_list as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
-                                let bar_width = format!("width:{:.1}%;", percent);
-                                let recent = mtime;
-                                let move_signal = move_dialog.clone();
-                                let path_for_dialog = path.clone();
-                                let name_for_dialog = name.clone();
-                                rsx!{ tr {
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name}" }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
-                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
-                                    td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
-                                    td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
-                                    td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
-                                        div { class: "bar-shell", 
-                                            div { class: "bar-fill-green", style: "{bar_width}" }
-                                        }
-                                    }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
-                                        div { style: "display:flex;gap:8px;flex-wrap:wrap;",
-                                            button { class: "btn", onclick: {
-                                                    let signal = move_signal.clone();
-                                                    let path_value = path_for_dialog.clone();
-                                                    let label_value = name_for_dialog.clone();
-                                                    move |_| {
-                                                        let mut dlg = signal.clone();
-                                                        dlg.set(Some(MoveDialogState {
-                                                            source_path: path_value.clone(),
-                                                            source_name: label_value.clone(),
-                                                            logical_size: logical,
-                                                            allocated_size: alloc,
-                                                            destination: String::new(),
-                                                            selected_drive: None,
-                                                            remove_source: true,
-                                                            overwrite: false,
-                                                            in_progress: false,
-                                                            done: false,
-                                                            result: None,
-                                                            error: None,
-                                                        }));
-                                                    }
-                                                }, "Verschieben" }
-                                            button { class: "btn", onclick: move |_| { copy_to_clipboard(path_for_dialog.clone()); }, "Kopieren" }
-                                        }
-                                    }
-                                } }
-                            }
                         }
+                        let bar = "█".repeat(blocks);
+                        rsx!{ div { style: "display:flex;gap:10px;align-items:center;font-family:monospace;",
+                            span { style: "min-width:80px;color:#a0aec0;", "{fmt_bytes(alloc)}" }
+                            pre { style: "margin:0;line-height:1.1;color:#60a5fa;cursor:pointer;", onclick: move |_| { 
+                                let mut list_path = list_path.clone();
+                                list_path.set(Some(label.clone())); 
+                                let mut hist = nav_h.read().clone();
+                                if !hist.contains(&label) { hist.push(label.clone()); }
+                                let mut nav_h = nav_h.clone();
+                                nav_h.set(hist);
+                            }, "{bar}" }
+                            span { style: "color:#93c5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:480px;", "{label}" }
+                        } }
                     }) }
                 }
-            }  // table close
-        }  // section close
+                // Top-Tabelle
+                table { class: "responsive-table",
+                    thead { tr {
+                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "type".to_string();
+                            let current_sort = top_sort.read().clone();
+                            let current_order = top_order.read().clone();
+                            let mut top_sort = top_sort.clone();
+                            let mut top_order = top_order.clone();
+                            if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                        }, "Typ" }
+                        th { class: "hide-mobile", style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "modified".to_string();
+                            let current_sort = top_sort.read().clone();
+                            let current_order = top_order.read().clone();
+                            let mut top_sort = top_sort.clone();
+                            let mut top_order = top_order.clone();
+                            if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                        }, "Zuletzt" }
+                        th { style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "allocated".to_string();
+                            let current_sort = top_sort.read().clone();
+                            let current_order = top_order.read().clone();
+                            let mut top_sort = top_sort.clone();
+                            let mut top_order = top_order.clone();
+                            if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                        }, "Allokiert" }
+                        th { class: "hide-mobile", style: "text-align:right;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "logical".to_string();
+                            let current_sort = top_sort.read().clone();
+                            let current_order = top_order.read().clone();
+                            let mut top_sort = top_sort.clone();
+                            let mut top_order = top_order.clone();
+                            if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                        }, "Logisch" }
+                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
+                            let key = "name".to_string();
+                            let current_sort = top_sort.read().clone();
+                            let current_order = top_order.read().clone();
+                            let mut top_sort = top_sort.clone();
+                            let mut top_order = top_order.clone();
+                            if current_sort == key { top_order.set(if current_order == "desc" { "asc".into() } else { "desc".into() }); } else { top_sort.set(key); top_order.set("desc".into()); }
+                        }, "Pfad" }
+                        th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
+                    } }
+                    tbody {
+                        {
+                            let mut rows = top_items.read().clone();
+                            // Sort key
+                            rows.sort_by_key(|it| match it {
+                                types::TopItem::Dir { allocated_size, logical_size, mtime, .. } => match top_sort.read().as_str() {
+                                    "logical" => *logical_size,
+                                    "name" => 0,
+                                    "type" => 0,
+                                    "modified" => mtime.unwrap_or(0),
+                                    _ => *allocated_size,
+                                },
+                                types::TopItem::File { allocated_size, logical_size, mtime, .. } => match top_sort.read().as_str() {
+                                    "logical" => *logical_size,
+                                    "name" => 0,
+                                    "type" => 1,
+                                    "modified" => mtime.unwrap_or(0),
+                                    _ => *allocated_size,
+                                },
+                            });
+                            let current_sort = top_sort.read().clone();
+                            let current_order = top_order.read().clone();
+                            if current_sort == "name" {
+                                rows.sort_by_key(|it| match it { types::TopItem::Dir { path, .. } | types::TopItem::File { path, .. } => path.to_lowercase() });
+                            }
+                            if current_sort == "type" {
+                                rows.sort_by_key(|it| match it { types::TopItem::Dir { .. } => 0, _ => 1 });
+                            }
+                            if current_order == "desc" { rows.reverse(); }
+                            rows.into_iter().map(|it| {
+                                match it {
+                                    types::TopItem::Dir { path, allocated_size, logical_size, mtime, .. } => {
+                                        let p_nav = path.clone();
+                                        let p_copy = path.clone();
+                                        let recent = mtime;
+                                        rsx!{ tr {
+                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
+                                            td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
+                                            td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
+                                            td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
+                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
+                                                let mut list_path = list_path.clone();
+                                                list_path.set(Some(p_nav.clone())); 
+                                                let mut hist = nav_history.read().clone();
+                                                if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
+                                                let mut nav_history = nav_history.clone();
+                                                nav_history.set(hist);
+                                            }, "{path}" }
+                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                                button { style: btn_style(), onclick: move |_| { copy_to_clipboard(p_copy.clone()); }, "Kopieren" }
+                                            }
+                                        } }
+                                    },
+                                    types::TopItem::File { path, allocated_size, logical_size, mtime, .. } => {
+                                        let recent = mtime;
+                                        rsx!{ tr {
+                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
+                                            td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
+                                            td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
+                                            td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
+                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{path}" }
+                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                                button { style: btn_style(), onclick: move |_| { copy_to_clipboard(path.clone()); }, "Kopieren" }
+                                            }
+                                        } }
+                                    },
+                                }
+                            })
+                        }
+                    }
+                }  // table close
+            }) }
+
+            { (*active_tab.read() == "log").then(|| rsx! {
+                 div { style: "margin-top:20px;",
+                     div { style: "display:flex;justify-content:space-between;align-items:center;",
+                         h3 { "Live Log" }
+                         label { style: "display:flex;gap:6px;align-items:center;", 
+                            input { r#type: "checkbox", checked: *live_log_enabled.read(), oninput: move |_| { let current = *live_log_enabled.read(); let mut live_log_enabled = live_log_enabled.clone(); live_log_enabled.set(!current); } } 
+                            "Live Updates" 
+                         }
+                     }
+                     pre { style: "background:#0b0c0f;border:1px solid #222533;border-radius:8px;padding:10px;max-height:600px;overflow:auto;white-space:pre-wrap;font-family:monospace;", "{log}" }
+                 }
+            }) }
         { move_dialog.read().as_ref().map(|dlg| move_dialog_view(dlg, move_dialog.clone(), drive_targets.clone(), drive_fetch_error.clone())) }
     }
 }

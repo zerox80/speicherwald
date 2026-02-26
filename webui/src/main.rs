@@ -2128,10 +2128,23 @@ fn move_dialog_view(
                                     };
                                     let move_signal_drive = move_signal.clone();
                                     let dialog_snapshot = dialog.clone();
+                                    let mut stripped_source = dialog_snapshot.source_path.as_str();
+                                    if stripped_source.len() >= 3 && stripped_source.chars().nth(1) == Some(':') && (stripped_source.chars().nth(2) == Some('\\') || stripped_source.chars().nth(2) == Some('/')) {
+                                        stripped_source = &stripped_source[3..];
+                                    } else if stripped_source.starts_with("\\\\") || stripped_source.starts_with("//") {
+                                        let mut parts = stripped_source[2..].splitn(3, |c| c == '\\' || c == '/');
+                                        parts.next();
+                                        parts.next();
+                                        if let Some(rest) = parts.next() { stripped_source = rest; } else { stripped_source = ""; }
+                                    } else if stripped_source.starts_with('/') || stripped_source.starts_with('\\') {
+                                        stripped_source = &stripped_source[1..];
+                                    }
+                                    let content_name = if stripped_source.is_empty() { dialog_snapshot.source_name.as_str() } else { stripped_source };
+
                                     let dest_suggestion = if drive_path.ends_with('\\') || drive_path.ends_with('/') {
-                                        format!("{}{}", drive_path, dialog_snapshot.source_name)
+                                        format!("{}{}", drive_path, content_name)
                                     } else {
-                                        format!("{}\\{}", drive_path, dialog_snapshot.source_name)
+                                        format!("{}\\{}", drive_path, content_name)
                                     };
                                     rsx!{
                                         button { style: "{button_style}", onclick: move |_| {

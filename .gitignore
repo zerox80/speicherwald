@@ -61,3 +61,4 @@ speicherwald.toml
 .env.local
 .env.*
 !.env.example
+.agents/rules/dependency.md

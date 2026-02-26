@@ -372,6 +372,9 @@ fn Scan(id: String) -> Element {
     // Navigation History für Breadcrumbs
     let nav_history = use_signal(|| Vec::<String>::new());
 
+    // Moved items
+    let moved_items = use_signal(|| std::collections::HashSet::<String>::new());
+
     // Tabs & Live Updates
     let active_tab = use_signal(|| "explorer".to_string());
     let live_update = use_signal(|| false);
@@ -1517,7 +1520,12 @@ fn Scan(id: String) -> Element {
                                     let move_signal = move_dialog.clone();
                                     let path_for_dialog = p.clone();
                                     let name_for_dialog = name.clone();
-                                    rsx!{ tr {
+
+                                    let is_moved = moved_items.read().contains(&p);
+                                    let row_style = if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
+                                    let name_display = if is_moved { format!("{} (Verschoben)", name) } else { name.clone() };
+
+                                    rsx!{ tr { style: "{row_style}",
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
                                             let hist = nav_history.read().clone();
                                             let mut list_path = list_path.clone();
@@ -1526,7 +1534,7 @@ fn Scan(id: String) -> Element {
                                             if !hist.contains(&p) { hist.push(p.clone()); }
                                             let mut nav_history = nav_history.clone();
                                             nav_history.set(hist);
-                                        }, "{name}" }
+                                        }, "{name_display}" }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
                                         td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                         td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
@@ -1573,8 +1581,13 @@ fn Scan(id: String) -> Element {
                                     let move_signal = move_dialog.clone();
                                     let path_for_dialog = path.clone();
                                     let name_for_dialog = name.clone();
-                                    rsx!{ tr {
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name}" }
+
+                                    let is_moved = moved_items.read().contains(&path);
+                                    let row_style = if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
+                                    let name_display = if is_moved { format!("{} (Verschoben)", name) } else { name.clone() };
+
+                                    rsx!{ tr { style: "{row_style}",
+                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name_display}" }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
                                         td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                         td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
@@ -1736,8 +1749,13 @@ fn Scan(id: String) -> Element {
                                             .map(|(_, tail)| tail.to_string())
                                             .unwrap_or_else(|| p_for_move.clone())
                                     });
-                                rsx!{ tr {
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t}" }
+                                
+                                let is_moved = moved_items.read().contains(&p);
+                                let row_style = if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
+                                let t_display = if is_moved { format!("{} (Verschoben)", t) } else { t.to_string() };
+
+                                rsx!{ tr { style: "{row_style}",
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t_display}" }
                                     td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
                                     td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
                                     td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
@@ -1968,8 +1986,13 @@ fn Scan(id: String) -> Element {
                                         let p_nav = path.clone();
                                         let p_copy = path.clone();
                                         let recent = mtime;
-                                        rsx!{ tr {
-                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
+                                        
+                                        let is_moved = moved_items.read().contains(&path);
+                                        let row_style = if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
+                                        let t_display = if is_moved { "Ordner (Verschoben)" } else { "Ordner" };
+
+                                        rsx!{ tr { style: "{row_style}",
+                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t_display}" }
                                             td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                             td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
                                             td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
@@ -1988,8 +2011,13 @@ fn Scan(id: String) -> Element {
                                     },
                                     types::TopItem::File { path, allocated_size, logical_size, mtime, .. } => {
                                         let recent = mtime;
-                                        rsx!{ tr {
-                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
+
+                                        let is_moved = moved_items.read().contains(&path);
+                                        let row_style = if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
+                                        let t_display = if is_moved { "Datei (Verschoben)" } else { "Datei" };
+
+                                        rsx!{ tr { style: "{row_style}",
+                                            td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t_display}" }
                                             td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                             td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(allocated_size)}" }
                                             td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical_size)}" }
@@ -2019,7 +2047,7 @@ fn Scan(id: String) -> Element {
                  }
             }) }
         }
-        { move_dialog.read().as_ref().map(|dlg| move_dialog_view(dlg, move_dialog.clone(), drive_targets.clone(), drive_fetch_error.clone())) }
+        { move_dialog.read().as_ref().map(|dlg| move_dialog_view(dlg, move_dialog.clone(), drive_targets.clone(), drive_fetch_error.clone(), moved_items.clone())) }
     }
 }
 
@@ -2028,6 +2056,7 @@ fn move_dialog_view(
     move_signal: Signal<Option<MoveDialogState>>,
     drive_targets: Signal<Vec<types::DriveInfo>>,
     drive_error: Signal<Option<String>>,
+    moved_items: Signal<std::collections::HashSet<String>>,
 ) -> Element {
     let drives_snapshot = drive_targets.read().clone();
     let drive_error_val = drive_error.read().clone();
@@ -2368,6 +2397,13 @@ fn move_dialog_view(
 
                                                     let mut move_signal_async = move_signal_async.clone();
                                                     move_signal_async.set(Some(updated));
+
+                                                    if request.remove_source {
+                                                        let mut moved = moved_items.clone();
+                                                        let mut current_moved = moved.read().clone();
+                                                        current_moved.insert(request.source.clone());
+                                                        moved.set(current_moved);
+                                                    }
 
                                                     show_toast("Pfad wurde verschoben");
 

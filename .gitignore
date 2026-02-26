@@ -39,6 +39,7 @@ ehthumbs.db
 /.trunk/
 /webui/.trunk/
 /webui/pkg/
+/ui/.stage/
 
 # Keep built Web UI artifacts tracked (required for desktop and backend serving)
 !/ui/

@@ -1069,6 +1069,68 @@ fn Scan(id: String) -> Element {
         .map(|n| n.allocated_size)
         .max()
         .unwrap_or(0);
+    let sorted_tree_items = use_memo({
+        let tree_items = tree_items.clone();
+        let tree_sort_view = tree_sort_view.clone();
+        let tree_order = tree_order.clone();
+        move || {
+            let mut rows = tree_items.read().clone();
+            let current_sort = tree_sort_view.read().clone();
+            let current_order = tree_order.read().clone();
+            rows.sort_by_key(|n| match current_sort.as_str() {
+                "logical" => n.logical_size,
+                "name" => 0,
+                "type" => if n.is_dir { 0 } else { 1 },
+                "modified" => n.mtime.unwrap_or(0),
+                _ => n.allocated_size,
+            });
+            if current_sort == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
+            if current_order == "desc" { rows.reverse(); }
+            rows
+        }
+    });
+
+    let filtered_list_items = use_memo({
+        let list_items = list_items.clone();
+        let search_query = search_query.clone();
+        let min_size_filter = min_size_filter.clone();
+        let file_type_filter = file_type_filter.clone();
+        let show_hidden = show_hidden.clone();
+        move || {
+            let query_val = search_query.read().to_lowercase();
+            let min_size_val = min_size_filter.read().clone();
+            let type_filter_val = file_type_filter.read().clone();
+            let show_hidden_val = *show_hidden.read();
+            list_items.read().iter()
+                .filter(|it| {
+                    let name_match = if query_val.is_empty() { true } else {
+                        match it {
+                            types::ListItem::Dir { name, .. } => name.to_lowercase().contains(&query_val),
+                            types::ListItem::File { name, .. } => name.to_lowercase().contains(&query_val),
+                        }
+                    };
+                    let size_match = match it {
+                        types::ListItem::Dir { allocated_size, .. } => *allocated_size >= min_size_val,
+                        types::ListItem::File { allocated_size, .. } => *allocated_size >= min_size_val,
+                    };
+                    let type_match = match type_filter_val.as_str() {
+                        "dirs" => matches!(it, types::ListItem::Dir { .. }),
+                        "files" => matches!(it, types::ListItem::File { .. }),
+                        _ => true,
+                    };
+                    let hidden_match = if !show_hidden_val {
+                        match it {
+                            types::ListItem::Dir { name, .. } => !name.starts_with('.'),
+                            types::ListItem::File { name, .. } => !name.starts_with('.'),
+                        }
+                    } else { true };
+                    name_match && size_match && type_match && hidden_match
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        }
+    });
+
     rsx! {
         section { class: "panel",
             h2 { "Scan {id}" }
@@ -1602,50 +1664,9 @@ fn Scan(id: String) -> Element {
                     } }
                     tbody {
                         { 
-                          let query_val = search_query.read().to_lowercase();
-                          let min_size_val = min_size_filter.read().clone();
-                          let type_filter_val = file_type_filter.read().clone();
-                          let show_hidden_val = *show_hidden.read();
-                          let filtered: Vec<_> = list_items.read().iter()
-                            .filter(|it| {
-                                // Suchfilter
-                                let name_match = if query_val.is_empty() { 
-                                    true 
-                                } else {
-                                    match it {
-                                        types::ListItem::Dir { name, .. } => name.to_lowercase().contains(&query_val),
-                                        types::ListItem::File { name, .. } => name.to_lowercase().contains(&query_val),
-                                    }
-                                };
-                                
-                                // Größenfilter
-                                let size_match = match it {
-                                    types::ListItem::Dir { allocated_size, .. } => *allocated_size >= min_size_val,
-                                    types::ListItem::File { allocated_size, .. } => *allocated_size >= min_size_val,
-                                };
-                                
-                                // Typfilter
-                                let type_match = match type_filter_val.as_str() {
-                                    "dirs" => matches!(it, types::ListItem::Dir { .. }),
-                                    "files" => matches!(it, types::ListItem::File { .. }),
-                                    _ => true,
-                                };
-                                
-                                // Versteckte Dateien Filter
-                                let hidden_match = if !show_hidden_val {
-                                    match it {
-                                        types::ListItem::Dir { name, .. } => !name.starts_with('.'),
-                                        types::ListItem::File { name, .. } => !name.starts_with('.'),
-                                    }
-                                } else {
-                                    true
-                                };
-                                
-                                name_match && size_match && type_match && hidden_match
-                            })
-                            .cloned()
-                            .collect();
+                          let filtered: Vec<_> = filtered_list_items.read().clone();
                           
+
                           filtered.clone().into_iter().enumerate().map({
                               let filt_captured = filtered.clone();
                               move |(idx, it)| {
@@ -2064,16 +2085,7 @@ fn Scan(id: String) -> Element {
                             th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
                         } }
                         tbody {
-                            { let mut rows = tree_items.read().clone();
-                              let current_sort = tree_sort_view.read().clone();
-                              let current_order = tree_order.read().clone();
-                              rows.sort_by_key(|n| match current_sort.as_str() {
-                                  "logical" => n.logical_size,
-                                  "name" => 0,
-                                  "type" => if n.is_dir { 0 } else { 1 },
-                                  "modified" => n.mtime.unwrap_or(0),
-                                  _ => n.allocated_size,
-                              });
+                            { let rows = sorted_tree_items.read().clone();
                               let filtered = rows.clone();
                               rows.into_iter().enumerate().map({
                                 let filtered = filtered.clone();

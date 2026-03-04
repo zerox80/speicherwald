@@ -162,10 +162,10 @@ pub struct DriveInfo {
 /// A request to move or copy a file or directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MovePathRequest {
-    /// The source path.
-    pub source: String,
-    /// The destination path.
-    pub destination: String,
+    /// The source paths.
+    pub sources: Vec<String>,
+    /// The destination paths.
+    pub destinations: Vec<String>,
     /// Whether to remove the source after the operation.
     #[serde(default)]
     pub remove_source: bool,
@@ -179,10 +179,10 @@ pub struct MovePathRequest {
 pub struct MovePathResponse {
     /// The status of the operation.
     pub status: String,
-    /// The source path.
-    pub source: String,
-    /// The destination path.
-    pub destination: String,
+    /// The source paths.
+    pub sources: Vec<String>,
+    /// The destination paths.
+    pub destinations: Vec<String>,
     /// The total number of bytes to transfer.
     pub bytes_to_transfer: u64,
     /// The number of bytes that were successfully moved or copied.

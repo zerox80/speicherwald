@@ -41,6 +41,8 @@ use ui_utils::{fmt_bytes, fmt_ago_short, copy_to_clipboard, download_csv, trigge
 struct MoveDialogState {
     source_path: String,
     source_name: String,
+    sources: Vec<String>,
+    source_names: Vec<String>,
     logical_size: i64,
     allocated_size: i64,
     destination: String,
@@ -375,6 +377,12 @@ fn Scan(id: String) -> Element {
     // Moved items
     let moved_items = use_signal(|| std::collections::HashSet::<String>::new());
 
+    // Selected items
+    let selected_items = use_signal(|| std::collections::HashSet::<String>::new());
+    let last_selected_idx = use_signal(|| None as Option<usize>);
+    let select_limit = use_signal(|| "100".to_string());
+    let select_limit_tree = use_signal(|| "100".to_string());
+
     // Tabs & Live Updates
     let active_tab = use_signal(|| "explorer".to_string());
     let live_update = use_signal(|| false);
@@ -385,9 +393,12 @@ fn Scan(id: String) -> Element {
         let list_offset0 = list_offset.clone();
         let list_path0 = list_path.clone();
         let nav_hist0 = nav_history.clone();
+        let selected_items0 = selected_items.clone();
         use_effect(move || {
             let mut list_offset0 = list_offset0.clone();
             list_offset0.set(0);
+            let mut selected_items0 = selected_items0.clone();
+            selected_items0.set(std::collections::HashSet::new());
             match &list_path0.read().clone() {
                 Some(p) => {
                     let mut hist = nav_hist0.read().clone();
@@ -1404,6 +1415,65 @@ fn Scan(id: String) -> Element {
                             }, "CSV export" }
                         { (*loading_list.read()).then(|| rsx!(span { class: "spinner", "" })) }
                         { err_list.read().as_ref().map(|e| rsx!(span { class: "text-danger", " Fehler: {e}" })) }
+                        
+                        { (!selected_items.read().is_empty()).then(|| {
+                            let count = selected_items.read().len();
+                            let move_signal = move_dialog.clone();
+                            let selected = selected_items.clone();
+                            let list_items = list_items.clone();
+                            rsx!(
+                                button {
+                                    class: "btn btn-primary",
+                                    style: "margin-left:auto;background:#3b82f6;border-color:#2563eb;",
+                                    onclick: move |_| {
+                                        let sel = selected.read();
+                                        let mut total_alloc = 0;
+                                        let mut total_logical = 0;
+                                        let mut paths = Vec::new();
+                                        let mut names = Vec::new();
+                                        for it in list_items.read().iter() {
+                                            match it {
+                                                types::ListItem::Dir { name, path, allocated_size, logical_size, .. } => {
+                                                    if sel.contains(path) {
+                                                        total_alloc += allocated_size;
+                                                        total_logical += logical_size;
+                                                        paths.push(path.clone());
+                                                        names.push(name.clone());
+                                                    }
+                                                }
+                                                types::ListItem::File { name, path, allocated_size, logical_size, .. } => {
+                                                    if sel.contains(path) {
+                                                        total_alloc += allocated_size;
+                                                        total_logical += logical_size;
+                                                        paths.push(path.clone());
+                                                        names.push(name.clone());
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        let mut dlg = move_signal.clone();
+                                        dlg.set(Some(MoveDialogState {
+                                            source_path: "Mehrere ausgewählt".to_string(),
+                                            source_name: format!("{} Elemente", count),
+                                            sources: paths,
+                                            source_names: names,
+                                            logical_size: total_logical,
+                                            allocated_size: total_alloc,
+                                            destination: String::new(),
+                                            selected_drive: None,
+                                            remove_source: true,
+                                            overwrite: false,
+                                            in_progress: false,
+                                            done: false,
+                                            result: None,
+                                            error: None,
+                                        }));
+                                    },
+                                    "Ausgewählte verschieben ({count})"
+                                }
+                            )
+                        }) }
                     }
     
                     { (list_items.read().is_empty() && list_path.read().is_none() && !*loading_list.read()).then(|| rsx!(
@@ -1412,6 +1482,72 @@ fn Scan(id: String) -> Element {
                 }
                 table { class: "responsive-table",
                     thead { tr {
+                        th { style: "width:120px;padding:6px;border-bottom:1px solid #222533;",
+                            div { style: "display:flex;align-items:center;gap:6px;",
+                                input {
+                                    r#type: "checkbox",
+                                    title: "Alle sichtbaren auswählen",
+                                    checked: "{!selected_items.read().is_empty()}",
+                                    style: "margin:0;",
+                                    onchange: {
+                                        let list_items = list_items.clone();
+                                        let search_query = search_query.clone();
+                                        let min_size_filter = min_size_filter.clone();
+                                        let file_type_filter = file_type_filter.clone();
+                                        let show_hidden = show_hidden.clone();
+                                        let selected_items = selected_items.clone();
+                                        let select_limit = select_limit.clone();
+                                        move |e| {
+                                            let mut sel = selected_items.clone();
+                                            if e.value() == "true" {
+                                                let query_val = search_query.read().to_lowercase();
+                                                let min_size_val = *min_size_filter.read();
+                                                let type_filter_val = file_type_filter.read().clone();
+                                                let show_hidden_val = *show_hidden.read();
+                                                let limit_val = select_limit.read().clone();
+                                                
+                                                let mut all_paths: std::vec::Vec<String> = list_items.read().iter()
+                                                    .filter(|it| {
+                                                        let name_match = if query_val.is_empty() { true } else { match it { types::ListItem::Dir { name, .. } => name.to_lowercase().contains(&query_val), types::ListItem::File { name, .. } => name.to_lowercase().contains(&query_val), } };
+                                                        let size_match = match it { types::ListItem::Dir { allocated_size, .. } => *allocated_size >= min_size_val, types::ListItem::File { allocated_size, .. } => *allocated_size >= min_size_val, };
+                                                        let type_match = match type_filter_val.as_str() { "dirs" => matches!(it, types::ListItem::Dir { .. }), "files" => matches!(it, types::ListItem::File { .. }), _ => true };
+                                                        let hidden_match = if !show_hidden_val { match it { types::ListItem::Dir { name, .. } => !name.starts_with('.'), types::ListItem::File { name, .. } => !name.starts_with('.'), } } else { true };
+                                                        name_match && size_match && type_match && hidden_match
+                                                    })
+                                                    .map(|it| match it { types::ListItem::Dir { path, .. } => path.clone(), types::ListItem::File { path, .. } => path.clone() })
+                                                    .collect();
+                                                
+                                                if limit_val != "all" {
+                                                    if let Ok(num) = limit_val.parse::<usize>() {
+                                                        all_paths.truncate(num);
+                                                    }
+                                                }
+                                                    
+                                                let all_paths_set: std::collections::HashSet<String> = all_paths.into_iter().collect();
+                                                sel.set(all_paths_set);
+                                            } else {
+                                                sel.set(std::collections::HashSet::new());
+                                            }
+                                        }
+                                    }
+                                }
+                                select {
+                                    value: "{select_limit}",
+                                    style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:4px;padding:2px 4px;font-size:0.8em;flex-grow:1;",
+                                    oninput: move |e| {
+                                        let mut select_limit = select_limit.clone();
+                                        select_limit.set(e.value());
+                                    },
+                                    option { value: "10", "10" }
+                                    option { value: "50", "50" }
+                                    option { value: "100", "100" }
+                                    option { value: "200", "200" }
+                                    option { value: "300", "300" }
+                                    option { value: "1000", "1000" }
+                                    option { value: "all", "Alle" }
+                                }
+                            }
+                        }
                         th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                             let key = "name".to_string();
                             let current_sort = list_sort.read().clone();
@@ -1510,7 +1646,9 @@ fn Scan(id: String) -> Element {
                             .cloned()
                             .collect();
                           
-                          filtered.into_iter().map(|it| {
+                          filtered.clone().into_iter().enumerate().map({
+                              let filt_captured = filtered.clone();
+                              move |(idx, it)| {
                             match it {
                                 types::ListItem::Dir { name, path, allocated_size, logical_size, mtime, .. } => {
                                     let alloc = allocated_size; let logical = logical_size; let p = path.clone();
@@ -1522,19 +1660,73 @@ fn Scan(id: String) -> Element {
                                     let name_for_dialog = name.clone();
 
                                     let is_moved = moved_items.read().contains(&p);
-                                    let row_style = if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
+                                    let is_selected = selected_items.read().contains(&p);
+                                    let row_style = if is_selected { "background:#1e3a8a;" } else if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
                                     let name_display = if is_moved { format!("{} (Verschoben)", name) } else { name.clone() };
 
-                                    rsx!{ tr { style: "{row_style}",
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", onclick: move |_| { 
-                                            let hist = nav_history.read().clone();
-                                            let mut list_path = list_path.clone();
-                                            list_path.set(Some(p.clone())); 
-                                            let mut hist = hist;
-                                            if !hist.contains(&p) { hist.push(p.clone()); }
-                                            let mut nav_history = nav_history.clone();
-                                            nav_history.set(hist);
-                                        }, "{name_display}" }
+                                    rsx!{ tr { 
+                                        style: "{row_style} cursor:pointer; user-select:none; -webkit-user-select:none;",
+                                        onmousedown: {
+                                            let p_clone = p.clone();
+                                            let selected_items = selected_items.clone();
+                                            let mut last_idx = last_selected_idx.clone();
+                                            let filt = filt_captured.clone();
+                                            move |e| {
+                                                let is_checked = !selected_items.read().contains(&p_clone);
+                                                
+                                                let mut sel = selected_items.read().clone();
+                                                let mut selected_items = selected_items.clone();
+                                                
+                                                if e.modifiers().contains(Modifiers::SHIFT) && last_idx.read().is_some() {
+                                                    let start = last_idx.read().unwrap().min(idx);
+                                                    let end = last_idx.read().unwrap().max(idx);
+                                                    for i in start..=end {
+                                                        if let Some(item) = filt.get(i) {
+                                                            let ipath = match item {
+                                                                types::ListItem::Dir { path, .. } => path.clone(),
+                                                                types::ListItem::File { path, .. } => path.clone(),
+                                                            };
+                                                            if is_checked {
+                                                                sel.insert(ipath);
+                                                            } else {
+                                                                sel.remove(&ipath);
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    if is_checked {
+                                                        sel.insert(p_clone.clone());
+                                                    } else {
+                                                        sel.remove(&p_clone);
+                                                    }
+                                                }
+                                                last_idx.set(Some(idx));
+                                                selected_items.set(sel);
+                                            }
+                                        },
+                                        td { 
+                                            style: "padding:6px;border-bottom:1px solid #1b1e2a;", 
+                                            input {
+                                                r#type: "checkbox",
+                                                checked: "{is_selected}",
+                                                style: "pointer-events:none;",
+                                            }
+                                        }
+                                        td { 
+                                            style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;", 
+                                            onmousedown: move |e| e.stop_propagation(),
+                                            onclick: move |e| { 
+                                                e.stop_propagation();
+                                                let hist = nav_history.read().clone();
+                                                let mut list_path = list_path.clone();
+                                                list_path.set(Some(p.clone())); 
+                                                let mut hist = hist;
+                                                if !hist.contains(&p) { hist.push(p.clone()); }
+                                                let mut nav_history = nav_history.clone();
+                                                nav_history.set(hist);
+                                            }, 
+                                            "{name_display}" 
+                                        }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Ordner" }
                                         td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
                                         td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
@@ -1544,7 +1736,10 @@ fn Scan(id: String) -> Element {
                                                 div { class: "bar-fill-blue", style: "{bar_width}" }
                                             }
                                         }
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                        td { 
+                                            style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                            onmousedown: move |e| e.stop_propagation(),
+                                            onclick: move |e| e.stop_propagation(),
                                             div { style: "display:flex;gap:8px;flex-wrap:wrap;",
                                                 button { class: "btn", onclick: {
                                                         let signal = move_signal.clone();
@@ -1555,6 +1750,8 @@ fn Scan(id: String) -> Element {
                                                             dlg.set(Some(MoveDialogState {
                                                                 source_path: path_value.clone(),
                                                                 source_name: label_value.clone(),
+                                                                sources: vec![path_value.clone()],
+                                                                source_names: vec![label_value.clone()],
                                                                 logical_size: logical,
                                                                 allocated_size: alloc,
                                                                 destination: String::new(),
@@ -1583,10 +1780,58 @@ fn Scan(id: String) -> Element {
                                     let name_for_dialog = name.clone();
 
                                     let is_moved = moved_items.read().contains(&path);
-                                    let row_style = if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
+                                    let is_selected = selected_items.read().contains(&path);
+                                    let row_style = if is_selected { "background:#1e3a8a;" } else if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
                                     let name_display = if is_moved { format!("{} (Verschoben)", name) } else { name.clone() };
 
-                                    rsx!{ tr { style: "{row_style}",
+                                    rsx!{ tr { 
+                                        style: "{row_style} cursor:pointer; user-select:none; -webkit-user-select:none;",
+                                        onmousedown: {
+                                            let p_clone = path.clone();
+                                            let selected_items = selected_items.clone();
+                                            let mut last_idx = last_selected_idx.clone();
+                                            let filt = filt_captured.clone();
+                                            move |e| {
+                                                let is_checked = !selected_items.read().contains(&p_clone);
+                                                
+                                                let mut sel = selected_items.read().clone();
+                                                let mut selected_items = selected_items.clone();
+                                                
+                                                if e.modifiers().contains(Modifiers::SHIFT) && last_idx.read().is_some() {
+                                                    let start = last_idx.read().unwrap().min(idx);
+                                                    let end = last_idx.read().unwrap().max(idx);
+                                                    for i in start..=end {
+                                                        if let Some(item) = filt.get(i) {
+                                                            let ipath = match item {
+                                                                types::ListItem::Dir { path: ip, .. } => ip.clone(),
+                                                                types::ListItem::File { path: ip, .. } => ip.clone(),
+                                                            };
+                                                            if is_checked {
+                                                                sel.insert(ipath);
+                                                            } else {
+                                                                sel.remove(&ipath);
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    if is_checked {
+                                                        sel.insert(p_clone.clone());
+                                                    } else {
+                                                        sel.remove(&p_clone);
+                                                    }
+                                                }
+                                                last_idx.set(Some(idx));
+                                                selected_items.set(sel);
+                                            }
+                                        },
+                                        td { 
+                                            style: "padding:6px;border-bottom:1px solid #1b1e2a;", 
+                                            input {
+                                                r#type: "checkbox",
+                                                checked: "{is_selected}",
+                                                style: "pointer-events:none;",
+                                            }
+                                        }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{name_display}" }
                                         td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "Datei" }
                                         td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(recent)}" }
@@ -1597,7 +1842,10 @@ fn Scan(id: String) -> Element {
                                                 div { class: "bar-fill-green", style: "{bar_width}" }
                                             }
                                         }
-                                        td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                        td { 
+                                            style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                            onmousedown: move |e| e.stop_propagation(),
+                                            onclick: move |e| e.stop_propagation(),
                                             div { style: "display:flex;gap:8px;flex-wrap:wrap;",
                                                 button { class: "btn", onclick: {
                                                         let signal = move_signal.clone();
@@ -1608,6 +1856,8 @@ fn Scan(id: String) -> Element {
                                                             dlg.set(Some(MoveDialogState {
                                                                 source_path: path_value.clone(),
                                                                 source_name: label_value.clone(),
+                                                                sources: vec![path_value.clone()],
+                                                                source_names: vec![label_value.clone()],
                                                                 logical_size: logical,
                                                                 allocated_size: alloc,
                                                                 destination: String::new(),
@@ -1627,7 +1877,7 @@ fn Scan(id: String) -> Element {
                                     } }
                                 }
                             }
-                        }) }
+                          } }) }
                     }
                 }  // table close
             }) }
@@ -1670,9 +1920,106 @@ fn Scan(id: String) -> Element {
                     { err_tree.read().as_ref().map(|e| rsx!(span { class: "text-danger", " Fehler: {e}" })) }
                 }
                 h3 { style: "margin-top:16px;", "Baum – Ergebnisse" }
+
+                { (!selected_items.read().is_empty()).then(|| {
+                    let count = selected_items.read().len();
+                    let move_signal = move_dialog.clone();
+                    let selected = selected_items.clone();
+                    let t_items = tree_items.clone();
+                    rsx!(
+                        div { style: "margin-bottom:12px;display:flex;",
+                            button {
+                                class: "btn btn-primary",
+                                style: "background:#3b82f6;border-color:#2563eb;",
+                                onclick: move |_| {
+                                    let sel = selected.read();
+                                    let mut total_alloc = 0;
+                                    let mut total_logical = 0;
+                                    let mut paths = Vec::new();
+                                    let mut names = Vec::new();
+                                    for it in t_items.read().iter() {
+                                        if sel.contains(&it.path) {
+                                            total_alloc += it.allocated_size;
+                                            total_logical += it.logical_size;
+                                            paths.push(it.path.clone());
+                                            let n = it.path.rsplit_once(['\\', '/']).map(|(_, tail)| tail).unwrap_or(&it.path);
+                                            names.push(n.to_string());
+                                        }
+                                    }
+
+                                    let mut dlg = move_signal.clone();
+                                    dlg.set(Some(MoveDialogState {
+                                        source_path: "Mehrere ausgewählt".to_string(),
+                                        source_name: format!("{} Elemente", count),
+                                        sources: paths,
+                                        source_names: names,
+                                        logical_size: total_logical,
+                                        allocated_size: total_alloc,
+                                        destination: String::new(),
+                                        selected_drive: None,
+                                        remove_source: true,
+                                        overwrite: false,
+                                        in_progress: false,
+                                        done: false,
+                                        result: None,
+                                        error: None,
+                                    }));
+                                },
+                                "Ausgewählte verschieben ({count})"
+                            }
+                        }
+                    )
+                }) }
+
                 div { class: "table-container",
                     table { class: "responsive-table",
                         thead { tr {
+                            th { style: "width:120px;padding:6px;border-bottom:1px solid #222533;",
+                                div { style: "display:flex;align-items:center;gap:6px;",
+                                    input {
+                                        r#type: "checkbox",
+                                        title: "Alle sichtbaren auswählen",
+                                        checked: "{!selected_items.read().is_empty()}",
+                                        style: "margin:0;",
+                                        onchange: {
+                                            let t_items = tree_items.clone();
+                                            let selected_items = selected_items.clone();
+                                            let select_limit_tree = select_limit_tree.clone();
+                                            move |e| {
+                                                let mut sel = selected_items.clone();
+                                                if e.value() == "true" {
+                                                    let mut all_paths: std::vec::Vec<String> = t_items.read().iter().map(|it| it.path.clone()).collect();
+                                                    let limit_val = select_limit_tree.read().clone();
+                                                    if limit_val != "all" {
+                                                        if let Ok(num) = limit_val.parse::<usize>() {
+                                                            all_paths.truncate(num);
+                                                        }
+                                                    }
+                                                    let all_paths_set: std::collections::HashSet<String> = all_paths.into_iter().collect();
+                                                    sel.set(all_paths_set);
+                                                } else {
+                                                    sel.set(std::collections::HashSet::new());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    select {
+                                        value: "{select_limit_tree}",
+                                        style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:4px;padding:2px 4px;font-size:0.8em;flex-grow:1;",
+                                        oninput: move |e| {
+                                            let mut select_limit_tree = select_limit_tree.clone();
+                                            select_limit_tree.set(e.value());
+                                        },
+                                        option { value: "10", "10" }
+                                        option { value: "50", "50" }
+                                        option { value: "100", "100" }
+                                        option { value: "200", "200" }
+                                        option { value: "300", "300" }
+                                        option { value: "1000", "1000" }
+                                        option { value: "all", "Alle" }
+                                    }
+                                }
+                            }
                             th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                                 let key = "type".to_string();
                                 let current_sort = tree_sort_view.read().clone();
@@ -1727,9 +2074,10 @@ fn Scan(id: String) -> Element {
                                   "modified" => n.mtime.unwrap_or(0),
                                   _ => n.allocated_size,
                               });
-                              if current_sort == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
-                              if current_order == "desc" { rows.reverse(); }
-                              rows.into_iter().map(|n| {
+                              let filtered = rows.clone();
+                              rows.into_iter().enumerate().map({
+                                let filtered = filtered.clone();
+                                move |(idx, n)| {
                                 let t = if n.is_dir { "Ordner" } else { "Datei" };
                                 let alloc = n.allocated_size; let logical = n.logical_size; let p = n.path.clone();
                                 let percent = if max_alloc_tree > 0 { ((alloc as f64) / (max_alloc_tree as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
@@ -1751,28 +2099,76 @@ fn Scan(id: String) -> Element {
                                     });
                                 
                                 let is_moved = moved_items.read().contains(&p);
-                                let row_style = if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
+                                let is_selected = selected_items.read().contains(&p);
+                                let row_style = if is_selected { "background:#1e3a8a;" } else if is_moved { "opacity:0.4;text-decoration:line-through;" } else { "" };
                                 let t_display = if is_moved { format!("{} (Verschoben)", t) } else { t.to_string() };
 
-                                rsx!{ tr { style: "{row_style}",
+                                rsx!{ tr { 
+                                    style: "cursor:pointer; user-select:none; -webkit-user-select:none; {row_style}",
+                                    onmousedown: {
+                                        let p_clone = p.clone();
+                                        let mut selected_items = selected_items.clone();
+                                        let mut last_idx = last_selected_idx.clone();
+                                        let filtered = filtered.clone();
+                                        move |e: Event<MouseData>| {
+                                            let mut sel = selected_items.read().clone();
+                                            if e.modifiers().contains(Modifiers::SHIFT) {
+                                                if let Some(start_idx) = *last_idx.read() {
+                                                    let min_idx = std::cmp::min(start_idx, idx);
+                                                    let max_idx = std::cmp::max(start_idx, idx);
+                                                    for i in min_idx..=max_idx {
+                                                        if let Some(item) = filtered.get(i) {
+                                                            sel.insert(item.path.clone());
+                                                        }
+                                                    }
+                                                } else {
+                                                    sel.insert(p_clone.clone());
+                                                }
+                                                last_idx.set(Some(idx));
+                                                selected_items.set(sel);
+                                            } else {
+                                                if sel.contains(&p_clone) {
+                                                    sel.remove(&p_clone);
+                                                } else {
+                                                    sel.insert(p_clone.clone());
+                                                }
+                                                last_idx.set(Some(idx));
+                                                selected_items.set(sel);
+                                            }
+                                        }
+                                    },
+                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", 
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: "{is_selected}",
+                                            style: "pointer-events:none;",
+                                        }
+                                    }
                                     td { style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{t_display}" }
                                     td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;", "{fmt_ago_short(n.mtime)}" }
                                     td { style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(alloc)}" }
                                     td { class: "hide-mobile", style: "padding:6px;text-align:right;border-bottom:1px solid #1b1e2a;", "{fmt_bytes(logical)}" }
-                                    td { class: "truncate-text", style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;max-width:300px;", title: "{p}", onclick: move |_| { 
-                                        let mut list_path = list_path.clone();
-                                        list_path.set(Some(p_nav.clone())); 
-                                        let mut hist = nav_history.read().clone();
-                                        if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
-                                        let mut nav_history = nav_history.clone();
-                                        nav_history.set(hist);
-                                    }, "{p}" }
+                                    td { class: "truncate-text", style: "padding:6px;border-bottom:1px solid #1b1e2a;cursor:pointer;color:#9cdcfe;max-width:300px;", title: "{p}", 
+                                        onmousedown: move |e| e.stop_propagation(),
+                                        onclick: move |e| { 
+                                            e.stop_propagation();
+                                            let mut list_path = list_path.clone();
+                                            list_path.set(Some(p_nav.clone())); 
+                                            let mut hist = nav_history.read().clone();
+                                            if !hist.contains(&p_nav) { hist.push(p_nav.clone()); }
+                                            let mut nav_history = nav_history.clone();
+                                            nav_history.set(hist);
+                                        }, "{p}" 
+                                    }
                                     td { class: "hide-mobile", style: "padding:6px;border-bottom:1px solid #1b1e2a;min-width:160px;",
                                         div { class: "bar-shell",
                                             div { class: "{bar_class}", style: "{bar_width}" }
                                         }
                                     }
-                                    td { style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                    td { 
+                                        style: "padding:6px;border-bottom:1px solid #1b1e2a;",
+                                        onmousedown: move |e| e.stop_propagation(),
+                                        onclick: move |e| e.stop_propagation(),
                                         div { style: "display:flex;gap:8px;flex-wrap:wrap;",
                                             button { class: "btn", onclick: {
                                                     let move_dialog = move_signal.clone();
@@ -1783,6 +2179,8 @@ fn Scan(id: String) -> Element {
                                                         dlg.set(Some(MoveDialogState {
                                                             source_path: path.clone(),
                                                             source_name: name.clone(),
+                                                            sources: vec![path.clone()],
+                                                            source_names: vec![name.clone()],
                                                             logical_size: logical,
                                                             allocated_size: alloc,
                                                             destination: String::new(),
@@ -1800,6 +2198,7 @@ fn Scan(id: String) -> Element {
                                         }
                                     }
                                 } }
+                                }
                               })
                             }
                         }
@@ -2047,7 +2446,7 @@ fn Scan(id: String) -> Element {
                  }
             }) }
         }
-        { move_dialog.read().as_ref().map(|dlg| move_dialog_view(dlg, move_dialog.clone(), drive_targets.clone(), drive_fetch_error.clone(), moved_items.clone())) }
+        { move_dialog.read().as_ref().map(|dlg| move_dialog_view(dlg, move_dialog.clone(), drive_targets.clone(), drive_fetch_error.clone(), moved_items.clone(), selected_items.clone())) }
     }
 }
 
@@ -2057,6 +2456,7 @@ fn move_dialog_view(
     drive_targets: Signal<Vec<types::DriveInfo>>,
     drive_error: Signal<Option<String>>,
     moved_items: Signal<std::collections::HashSet<String>>,
+    selected_items: Signal<std::collections::HashSet<String>>,
 ) -> Element {
     let drives_snapshot = drive_targets.read().clone();
     let drive_error_val = drive_error.read().clone();
@@ -2356,6 +2756,7 @@ fn move_dialog_view(
                                 let drives_signal_async = drive_targets.clone();
                                 let drive_error_signal_async = drive_error.clone();
                                 let dialog_snapshot = dialog.clone();
+                                let selected_items = selected_items.clone();
                                 move |_| {
                                     if dialog_snapshot.in_progress {
                                         return;
@@ -2367,9 +2768,41 @@ fn move_dialog_view(
                                     inflight.done = false;
                                     inflight.result = None;
 
+                                    let mut final_sources = Vec::new();
+                                    let mut final_destinations = Vec::new();
+                                    let dest_base = dialog_snapshot.destination.trim();
+
+                                    if dialog_snapshot.sources.len() <= 1 {
+                                        let src_path = if dialog_snapshot.sources.is_empty() { &dialog_snapshot.source_path } else { &dialog_snapshot.sources[0] };
+                                        final_sources.push(src_path.to_string());
+                                        final_destinations.push(dest_base.to_string());
+                                    } else {
+                                        for src in &dialog_snapshot.sources {
+                                            let mut stripped = src.as_str();
+                                            if stripped.len() >= 3 && stripped.chars().nth(1) == Some(':') && (stripped.chars().nth(2) == Some('\\') || stripped.chars().nth(2) == Some('/')) {
+                                                stripped = &stripped[3..];
+                                            } else if stripped.starts_with("\\\\") || stripped.starts_with("//") {
+                                                let mut parts = stripped[2..].splitn(3, |c| c == '\\' || c == '/');
+                                                parts.next(); parts.next();
+                                                if let Some(rest) = parts.next() { stripped = rest; } else { stripped = ""; }
+                                            } else if stripped.starts_with('/') || stripped.starts_with('\\') {
+                                                stripped = &stripped[1..];
+                                            }
+                                            if stripped.is_empty() { stripped = src.as_str(); }
+                                            
+                                            let dest_item = if dest_base.ends_with('\\') || dest_base.ends_with('/') {
+                                                format!("{}{}", dest_base, stripped)
+                                            } else {
+                                                format!("{}\\{}", dest_base, stripped)
+                                            };
+                                            final_sources.push(src.clone());
+                                            final_destinations.push(dest_item);
+                                        }
+                                    }
+
                                     let request = types::MovePathRequest {
-                                        source: dialog_snapshot.source_path.clone(),
-                                        destination: dialog_snapshot.destination.trim().to_string(),
+                                        sources: final_sources,
+                                        destinations: final_destinations,
                                         remove_source: dialog_snapshot.remove_source,
                                         overwrite: dialog_snapshot.overwrite,
                                     };
@@ -2386,6 +2819,7 @@ fn move_dialog_view(
                                         let drive_error_signal_async = drive_error_signal_async.clone();
                                         let inflight_state = inflight.clone();
                                         let request = request.clone();
+                                        let selected_items_async = selected_items.clone();
 
                                         async move {
                                             match api::move_path(&request).await {
@@ -2401,8 +2835,14 @@ fn move_dialog_view(
                                                     if request.remove_source {
                                                         let mut moved = moved_items.clone();
                                                         let mut current_moved = moved.read().clone();
-                                                        current_moved.insert(request.source.clone());
+                                                        let mut selected = selected_items_async.clone();
+                                                        let mut current_sel = selected.read().clone();
+                                                        for src in &request.sources {
+                                                            current_moved.insert(src.clone());
+                                                            current_sel.remove(src);
+                                                        }
                                                         moved.set(current_moved);
+                                                        selected.set(current_sel);
                                                     }
 
                                                     show_toast("Pfad wurde verschoben");

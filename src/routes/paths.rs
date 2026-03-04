@@ -97,32 +97,47 @@ pub async fn move_path(
         return Ok((status, body).into_response());
     }
 
-    let source_trimmed = req.source.trim();
-    if source_trimmed.is_empty() {
-        return Err(AppError::BadRequest("source path must not be empty".into()));
+    if req.sources.is_empty() || req.destinations.is_empty() {
+        return Err(AppError::BadRequest("sources and destinations arrays must not be empty".into()));
     }
-    let dest_trimmed = req.destination.trim();
-    if dest_trimmed.is_empty() {
-        return Err(AppError::BadRequest("destination path must not be empty".into()));
+    if req.sources.len() != req.destinations.len() {
+        return Err(AppError::BadRequest("sources and destinations arrays must have the same length".into()));
     }
 
-    let source_valid = match validate_file_path(source_trimmed) {
-        Ok(path) => path,
-        Err((status, body)) => return Ok((status, body).into_response()),
-    };
-    let dest_valid = match validate_file_path(dest_trimmed) {
-        Ok(path) => path,
-        Err((status, body)) => return Ok((status, body).into_response()),
-    };
+    let mut valid_sources = Vec::new();
+    let mut valid_destinations = Vec::new();
 
-    if source_valid.eq_ignore_ascii_case(&dest_valid) {
-        return Err(AppError::BadRequest("source and destination must be different".into()));
+    for (i, src) in req.sources.iter().enumerate() {
+        let src_trimmed = src.trim();
+        let dest_trimmed = req.destinations[i].trim();
+        
+        if src_trimmed.is_empty() {
+            return Err(AppError::BadRequest("source path must not be empty".into()));
+        }
+        if dest_trimmed.is_empty() {
+            return Err(AppError::BadRequest("destination path must not be empty".into()));
+        }
+
+        let source_valid = match validate_file_path(src_trimmed) {
+            Ok(path) => path,
+            Err((status, body)) => return Ok((status, body).into_response()),
+        };
+        let dest_valid = match validate_file_path(dest_trimmed) {
+            Ok(path) => path,
+            Err((status, body)) => return Ok((status, body).into_response()),
+        };
+
+        if source_valid.eq_ignore_ascii_case(&dest_valid) {
+            return Err(AppError::BadRequest("source and destination must be different".into()));
+        }
+
+        valid_sources.push(source_valid);
+        valid_destinations.push(dest_valid);
     }
 
     tracing::info!(
-        "Move request: '{}' -> '{}' (remove_source={}, overwrite={})",
-        sanitize_for_logging(&source_valid),
-        sanitize_for_logging(&dest_valid),
+        "Move request: {} items (remove_source={}, overwrite={})",
+        valid_sources.len(),
         req.remove_source,
         req.overwrite
     );
@@ -131,8 +146,8 @@ pub async fn move_path(
     let started_instant = Instant::now();
 
     let mut job_req = req.clone();
-    job_req.source = source_valid.clone();
-    job_req.destination = dest_valid.clone();
+    job_req.sources = valid_sources.clone();
+    job_req.destinations = valid_destinations.clone();
 
     // FIX Bug #36: Add timeout to blocking operations (30 minutes for large file ops)
     // FIX Bug #6: Add cancellation token for detached task cleanup
@@ -140,7 +155,7 @@ pub async fn move_path(
     let cancel_child = cancel_token.clone();
     
     let outcome = tokio::select! {
-        res = spawn_blocking(move || perform_move(job_req, cancel_child)) => {
+        res = spawn_blocking(move || perform_moves(job_req, cancel_child)) => {
             res.map_err(|e| AppError::Internal(anyhow!("move task join error: {}", e)))?
         }
         _ = tokio::time::sleep(std::time::Duration::from_secs(1800)) => {
@@ -149,12 +164,11 @@ pub async fn move_path(
         }
     }?;
 
-
     let duration_ms = started_instant.elapsed().as_millis();
     let response = MovePathResponse {
         status: "completed".to_string(),
-        source: source_valid,
-        destination: dest_valid,
+        sources: valid_sources,
+        destinations: valid_destinations,
         bytes_to_transfer: outcome.bytes_to_transfer,
         bytes_moved: outcome.bytes_moved,
         freed_bytes: outcome.freed_bytes,
@@ -167,13 +181,53 @@ pub async fn move_path(
     Ok((StatusCode::OK, Json(response)).into_response())
 }
 
-fn perform_move(req: MovePathRequest, cancel: CancellationToken) -> AppResult<MoveOutcome> {
-    let source_path = PathBuf::from(&req.source);
-    if !source_path.exists() {
-        return Err(AppError::NotFound(format!("source path does not exist: {}", req.source)));
+fn perform_moves(req: MovePathRequest, cancel: CancellationToken) -> AppResult<MoveOutcome> {
+    let mut total_bytes_to_transfer = 0;
+    let mut total_bytes_moved = 0;
+    let mut total_freed_bytes = 0;
+    let mut all_warnings = Vec::new();
+
+    for i in 0..req.sources.len() {
+        if cancel.is_cancelled() {
+            all_warnings.push("Operation cancelled by user. Some items were not processed.".into());
+            break;
+        }
+
+        let source_str = &req.sources[i];
+        let dest_str = &req.destinations[i];
+        
+        // Use a dummy req for each operation to pass the overwrite and remove_source flags down
+        let item_req = MovePathRequest {
+            sources: vec![source_str.clone()],
+            destinations: vec![dest_str.clone()],
+            remove_source: req.remove_source,
+            overwrite: req.overwrite,
+        };
+        
+        match perform_single_move(&item_req, &cancel) {
+            Ok(outcome) => {
+                total_bytes_to_transfer += outcome.bytes_to_transfer;
+                total_bytes_moved += outcome.bytes_moved;
+                total_freed_bytes += outcome.freed_bytes;
+                all_warnings.extend(outcome.warnings);
+            },
+            Err(e) => {
+                all_warnings.push(format!("Failed to move {}: {}", source_str, e));
+                // Continue with the next item instead of failing the whole batch
+            }
+        }
     }
 
-    let dest_path = PathBuf::from(&req.destination);
+    Ok(MoveOutcome { bytes_to_transfer: total_bytes_to_transfer, bytes_moved: total_bytes_moved, freed_bytes: total_freed_bytes, warnings: all_warnings })
+}
+
+fn perform_single_move(req: &MovePathRequest, cancel: &CancellationToken) -> AppResult<MoveOutcome> {
+    let source_path = PathBuf::from(&req.sources[0]);
+    if !source_path.exists() {
+        return Err(AppError::NotFound(format!("source path does not exist: {}", req.sources[0])));
+    }
+
+    let dest_path = PathBuf::from(&req.destinations[0]);
     if dest_path.starts_with(&source_path) {
         return Err(AppError::BadRequest("destination cannot be inside the source path".into()));
     }
@@ -236,16 +290,14 @@ fn perform_move(req: MovePathRequest, cancel: CancellationToken) -> AppResult<Mo
     }
 
     let bytes_moved = if metadata.is_file() {
-        move_file(&source_path, &dest_path, &req, &cancel)?
+        move_file(&source_path, &dest_path, req, cancel)?
     } else if metadata.is_dir() {
-        move_directory(&source_path, &dest_path, &req, &mut warnings, &cancel)?
+        move_directory(&source_path, &dest_path, req, &mut warnings, cancel)?
     } else {
         return Err(AppError::BadRequest("source must refer to a file or directory".into()));
     };
 
     // FIX Bug #8: Correctly calculate freed bytes.
-    // If we fell back to copy and failed to remove source, we didn't free anything.
-    // Checking existence is the most reliable way given the function signature.
     let freed_bytes = if req.remove_source && !source_path.exists() { 
         bytes_to_transfer 
     } else { 

@@ -163,8 +163,8 @@ pub enum ScanEvent {
 /// with options for copy vs move and overwrite behavior.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct MovePathRequest {
-    pub source: String,
-    pub destination: String,
+    pub sources: Vec<String>,
+    pub destinations: Vec<String>,
     #[serde(default)]
     pub remove_source: bool,
     #[serde(default)]
@@ -178,8 +178,8 @@ pub struct MovePathRequest {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct MovePathResponse {
     pub status: String,
-    pub source: String,
-    pub destination: String,
+    pub sources: Vec<String>,
+    pub destinations: Vec<String>,
     pub bytes_to_transfer: u64,
     pub bytes_moved: u64,
     pub freed_bytes: u64,

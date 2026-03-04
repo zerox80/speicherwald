@@ -1069,24 +1069,37 @@ fn Scan(id: String) -> Element {
         .map(|n| n.allocated_size)
         .max()
         .unwrap_or(0);
-    let sorted_tree_items = use_memo({
+    let sorted_tree_indices = use_memo({
         let tree_items = tree_items.clone();
         let tree_sort_view = tree_sort_view.clone();
         let tree_order = tree_order.clone();
         move || {
-            let mut rows = tree_items.read().clone();
+            let items = tree_items.read();
             let current_sort = tree_sort_view.read().clone();
             let current_order = tree_order.read().clone();
-            rows.sort_by_key(|n| match current_sort.as_str() {
-                "logical" => n.logical_size,
-                "name" => 0,
-                "type" => if n.is_dir { 0 } else { 1 },
-                "modified" => n.mtime.unwrap_or(0),
-                _ => n.allocated_size,
+            let mut indices: Vec<usize> = (0..items.len()).collect();
+            indices.sort_unstable_by(|&a, &b| {
+                let node_a = &items[a];
+                let node_b = &items[b];
+                
+                let mut cmp = match current_sort.as_str() {
+                    "logical" => node_a.logical_size.cmp(&node_b.logical_size),
+                    "name" => node_a.path.cmp(&node_b.path),
+                    "type" => {
+                        let type_a = if node_a.is_dir { 0 } else { 1 };
+                        let type_b = if node_b.is_dir { 0 } else { 1 };
+                        type_a.cmp(&type_b)
+                    },
+                    "modified" => node_a.mtime.unwrap_or(0).cmp(&node_b.mtime.unwrap_or(0)),
+                    _ => node_a.allocated_size.cmp(&node_b.allocated_size),
+                };
+                
+                if current_order == "desc" {
+                    cmp = cmp.reverse();
+                }
+                cmp
             });
-            if current_sort == "name" { rows.sort_by_key(|n| n.path.to_lowercase()); }
-            if current_order == "desc" { rows.reverse(); }
-            rows
+            indices
         }
     });
 
@@ -2003,13 +2016,16 @@ fn Scan(id: String) -> Element {
                                         checked: "{!selected_items.read().is_empty()}",
                                         style: "margin:0;",
                                         onchange: {
-                                            let sorted_tree = sorted_tree_items.clone();
+                                            let sorted_tree_indices = sorted_tree_indices.clone();
+                                            let t_items_ref = tree_items.clone();
                                             let selected_items = selected_items.clone();
                                             let select_limit_tree = select_limit_tree.clone();
                                             move |e| {
                                                 let mut sel = selected_items.clone();
                                                 if e.value() == "true" {
-                                                    let mut all_paths: std::vec::Vec<String> = sorted_tree.read().iter().map(|it| it.path.clone()).collect();
+                                                    let sorted_indices = sorted_tree_indices.read();
+                                                    let items = t_items_ref.read();
+                                                    let mut all_paths: std::vec::Vec<String> = sorted_indices.iter().map(|&i| items[i].path.clone()).collect();
                                                     let limit_val = select_limit_tree.read().clone();
                                                     if limit_val != "all" {
                                                         if let Ok(num) = limit_val.parse::<usize>() {
@@ -2085,11 +2101,14 @@ fn Scan(id: String) -> Element {
                             th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;", "Aktionen" }
                         } }
                         tbody {
-                            { let rows = sorted_tree_items.read().clone();
-                              let filtered = rows.clone();
-                              rows.into_iter().take(*tree_limit.read() as usize).enumerate().map({
-                                let filtered = filtered.clone();
-                                move |(idx, n)| {
+                            { let indices = sorted_tree_indices.read().clone();
+                              let t_items = tree_items.clone();
+                              indices.into_iter().take(*tree_limit.read() as usize).enumerate().map({
+                                let filt_indices = sorted_tree_indices.read().clone();
+                                let t_items_ref = tree_items.clone();
+                                move |(idx, real_idx)| {
+                                let items = t_items.read();
+                                let n = &items[real_idx];
                                 let t = if n.is_dir { "Ordner" } else { "Datei" };
                                 let alloc = n.allocated_size; let logical = n.logical_size; let p = n.path.clone();
                                 let percent = if max_alloc_tree > 0 { ((alloc as f64) / (max_alloc_tree as f64) * 100.0).clamp(1.0, 100.0) } else { 0.0 };
@@ -2121,7 +2140,8 @@ fn Scan(id: String) -> Element {
                                         let p_clone = p.clone();
                                         let mut selected_items = selected_items.clone();
                                         let mut last_idx = last_selected_idx.clone();
-                                        let filtered = filtered.clone();
+                                        let filt_indices = filt_indices.clone();
+                                        let t_items_ref = t_items_ref.clone();
                                         move |e: Event<MouseData>| {
                                             let mut sel = selected_items.read().clone();
                                             if e.modifiers().contains(Modifiers::SHIFT) {
@@ -2129,8 +2149,10 @@ fn Scan(id: String) -> Element {
                                                     let min_idx = std::cmp::min(start_idx, idx);
                                                     let max_idx = std::cmp::max(start_idx, idx);
                                                     for i in min_idx..=max_idx {
-                                                        if let Some(item) = filtered.get(i) {
-                                                            sel.insert(item.path.clone());
+                                                        if let Some(&real_i) = filt_indices.get(i) {
+                                                            if let Some(item) = t_items_ref.read().get(real_i) {
+                                                                sel.insert(item.path.clone());
+                                                            }
                                                         }
                                                     }
                                                 } else {

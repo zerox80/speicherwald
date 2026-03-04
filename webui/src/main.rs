@@ -2003,13 +2003,13 @@ fn Scan(id: String) -> Element {
                                         checked: "{!selected_items.read().is_empty()}",
                                         style: "margin:0;",
                                         onchange: {
-                                            let t_items = tree_items.clone();
+                                            let sorted_tree = sorted_tree_items.clone();
                                             let selected_items = selected_items.clone();
                                             let select_limit_tree = select_limit_tree.clone();
                                             move |e| {
                                                 let mut sel = selected_items.clone();
                                                 if e.value() == "true" {
-                                                    let mut all_paths: std::vec::Vec<String> = t_items.read().iter().map(|it| it.path.clone()).collect();
+                                                    let mut all_paths: std::vec::Vec<String> = sorted_tree.read().iter().map(|it| it.path.clone()).collect();
                                                     let limit_val = select_limit_tree.read().clone();
                                                     if limit_val != "all" {
                                                         if let Ok(num) = limit_val.parse::<usize>() {
@@ -2087,7 +2087,7 @@ fn Scan(id: String) -> Element {
                         tbody {
                             { let rows = sorted_tree_items.read().clone();
                               let filtered = rows.clone();
-                              rows.into_iter().enumerate().map({
+                              rows.into_iter().take(*tree_limit.read() as usize).enumerate().map({
                                 let filtered = filtered.clone();
                                 move |(idx, n)| {
                                 let t = if n.is_dir { "Ordner" } else { "Datei" };

@@ -380,8 +380,6 @@ fn Scan(id: String) -> Element {
     // Selected items
     let selected_items = use_signal(|| std::collections::HashSet::<String>::new());
     let last_selected_idx = use_signal(|| None as Option<usize>);
-    let select_limit = use_signal(|| "100".to_string());
-    let select_limit_tree = use_signal(|| "100".to_string());
 
     // Tabs & Live Updates
     let active_tab = use_signal(|| "explorer".to_string());
@@ -1571,7 +1569,6 @@ fn Scan(id: String) -> Element {
                                         let file_type_filter = file_type_filter.clone();
                                         let show_hidden = show_hidden.clone();
                                         let selected_items = selected_items.clone();
-                                        let select_limit = select_limit.clone();
                                         move |e| {
                                             let mut sel = selected_items.clone();
                                             if e.value() == "true" {
@@ -1579,9 +1576,8 @@ fn Scan(id: String) -> Element {
                                                 let min_size_val = *min_size_filter.read();
                                                 let type_filter_val = file_type_filter.read().clone();
                                                 let show_hidden_val = *show_hidden.read();
-                                                let limit_val = select_limit.read().clone();
                                                 
-                                                let mut all_paths: std::vec::Vec<String> = list_items.read().iter()
+                                                let all_paths: std::vec::Vec<String> = list_items.read().iter()
                                                     .filter(|it| {
                                                         let name_match = if query_val.is_empty() { true } else { match it { types::ListItem::Dir { name, .. } => name.to_lowercase().contains(&query_val), types::ListItem::File { name, .. } => name.to_lowercase().contains(&query_val), } };
                                                         let size_match = match it { types::ListItem::Dir { allocated_size, .. } => *allocated_size >= min_size_val, types::ListItem::File { allocated_size, .. } => *allocated_size >= min_size_val, };
@@ -1591,12 +1587,6 @@ fn Scan(id: String) -> Element {
                                                     })
                                                     .map(|it| match it { types::ListItem::Dir { path, .. } => path.clone(), types::ListItem::File { path, .. } => path.clone() })
                                                     .collect();
-                                                
-                                                if limit_val != "all" {
-                                                    if let Ok(num) = limit_val.parse::<usize>() {
-                                                        all_paths.truncate(num);
-                                                    }
-                                                }
                                                     
                                                 let all_paths_set: std::collections::HashSet<String> = all_paths.into_iter().collect();
                                                 sel.set(all_paths_set);
@@ -1605,21 +1595,6 @@ fn Scan(id: String) -> Element {
                                             }
                                         }
                                     }
-                                }
-                                select {
-                                    value: "{select_limit}",
-                                    style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:4px;padding:2px 4px;font-size:0.8em;flex-grow:1;",
-                                    oninput: move |e| {
-                                        let mut select_limit = select_limit.clone();
-                                        select_limit.set(e.value());
-                                    },
-                                    option { value: "10", "10" }
-                                    option { value: "50", "50" }
-                                    option { value: "100", "100" }
-                                    option { value: "200", "200" }
-                                    option { value: "300", "300" }
-                                    option { value: "1000", "1000" }
-                                    option { value: "all", "Alle" }
                                 }
                             }
                         }
@@ -2008,8 +1983,9 @@ fn Scan(id: String) -> Element {
                 div { class: "table-container",
                     table { class: "responsive-table",
                         thead { tr {
-                            th { style: "width:120px;padding:6px;border-bottom:1px solid #222533;",
-                                div { style: "display:flex;align-items:center;gap:6px;",
+                            th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;width:80px;",
+                            div { style: "display:flex; flex-direction:column; gap:4px;",
+                                label { style: "display:flex; align-items:center; gap:4px;",
                                     input {
                                         r#type: "checkbox",
                                         title: "Alle sichtbaren auswählen",
@@ -2019,19 +1995,14 @@ fn Scan(id: String) -> Element {
                                             let sorted_tree_indices = sorted_tree_indices.clone();
                                             let t_items_ref = tree_items.clone();
                                             let selected_items = selected_items.clone();
-                                            let select_limit_tree = select_limit_tree.clone();
+                                            let tree_limit = tree_limit.clone();
                                             move |e| {
                                                 let mut sel = selected_items.clone();
                                                 if e.value() == "true" {
                                                     let sorted_indices = sorted_tree_indices.read();
                                                     let items = t_items_ref.read();
-                                                    let mut all_paths: std::vec::Vec<String> = sorted_indices.iter().map(|&i| items[i].path.clone()).collect();
-                                                    let limit_val = select_limit_tree.read().clone();
-                                                    if limit_val != "all" {
-                                                        if let Ok(num) = limit_val.parse::<usize>() {
-                                                            all_paths.truncate(num);
-                                                        }
-                                                    }
+                                                    let current_limit = *tree_limit.read() as usize;
+                                                    let all_paths: std::vec::Vec<String> = sorted_indices.iter().take(current_limit).map(|&i| items[i].path.clone()).collect();
                                                     let all_paths_set: std::collections::HashSet<String> = all_paths.into_iter().collect();
                                                     sel.set(all_paths_set);
                                                 } else {
@@ -2040,23 +2011,10 @@ fn Scan(id: String) -> Element {
                                             }
                                         }
                                     }
-                                    select {
-                                        value: "{select_limit_tree}",
-                                        style: "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:4px;padding:2px 4px;font-size:0.8em;flex-grow:1;",
-                                        oninput: move |e| {
-                                            let mut select_limit_tree = select_limit_tree.clone();
-                                            select_limit_tree.set(e.value());
-                                        },
-                                        option { value: "10", "10" }
-                                        option { value: "50", "50" }
-                                        option { value: "100", "100" }
-                                        option { value: "200", "200" }
-                                        option { value: "300", "300" }
-                                        option { value: "1000", "1000" }
-                                        option { value: "all", "Alle" }
-                                    }
+                                    "Alle"
                                 }
                             }
+                        }
                             th { style: "text-align:left;padding:6px;border-bottom:1px solid #222533;cursor:pointer;", onclick: move |_| {
                                 let key = "type".to_string();
                                 let current_sort = tree_sort_view.read().clone();

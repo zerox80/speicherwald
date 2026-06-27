@@ -508,7 +508,7 @@ pub async fn scan_events(
 
 
 const LIKE_ESCAPE: char = '!';
-const TREE_LIMIT_MAX: i64 = 10_000_000;
+const TREE_LIMIT_MAX: i64 = 2_000;
 
 fn escape_like_pattern(p: &str) -> String {
     let mut out = String::with_capacity(p.len());
@@ -679,7 +679,7 @@ pub async fn get_tree(
         Some("name") => qb.push(" ORDER BY path ASC"),
         _ => qb.push(" ORDER BY allocated_size DESC"),
     };
-    // Clamp limit to a safe range to prevent overly large responses while allowing larger exports for power users
+    // Keep interactive tree responses bounded so clients do not freeze while rendering.
     let limit = q.limit.unwrap_or(200).clamp(1, TREE_LIMIT_MAX);
     qb.push(" LIMIT ").push_bind(limit);
 
@@ -1254,4 +1254,61 @@ async fn get_atime_secs(path: &str) -> Option<i64> {
         .and_then(|m| m.accessed().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn get_tree_clamps_oversized_limit() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        crate::db::init_db(&pool).await.unwrap();
+        let state = AppState::new(pool.clone(), crate::config::AppConfig::default());
+        let scan_id = Uuid::new_v4();
+        let roots_json = serde_json::to_string(&vec![r#"C:\root"#.to_string()]).unwrap();
+        let options_json = serde_json::to_string(&ScanOptions::default()).unwrap();
+        sqlx::query(
+            r#"INSERT INTO scans (id, status, root_paths, options)
+               VALUES (?1, 'done', ?2, ?3)"#,
+        )
+        .bind(scan_id.to_string())
+        .bind(roots_json)
+        .bind(options_json)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        for idx in 0..2_100 {
+            sqlx::query(
+                r#"INSERT INTO nodes
+                   (scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count)
+                   VALUES (?1, ?2, ?3, 1, 1, 10, ?4, 0, 0)"#,
+            )
+            .bind(scan_id.to_string())
+            .bind(format!(r#"C:\root\dir-{idx:04}"#))
+            .bind(Some(r#"C:\root"#.to_string()))
+            .bind(idx as i64)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+
+        let response = get_tree(
+            State(state),
+            Path(scan_id),
+            Query(TreeQuery { path: None, depth: None, sort: Some("name".to_string()), limit: Some(20_000) }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let items: Vec<NodeDto> = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(items.len(), TREE_LIMIT_MAX as usize);
+    }
 }

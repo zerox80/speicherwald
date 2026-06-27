@@ -20,8 +20,8 @@ use std::net::{IpAddr, SocketAddr};
 /// 3. Fallback IP address if provided
 /// 4. Default to `127.0.0.1` if no fallback is provided
 ///
-/// The `x-forwarded-for` header can contain multiple IPs (client, proxy1, proxy2, ...),
-/// in which case the first IP is the original client IP.
+/// The `x-forwarded-for` header can contain multiple IPs (client, proxy1, proxy2, ...).
+/// This function uses the rightmost IP because it is the address added by the last proxy.
 ///
 /// # Arguments
 ///
@@ -35,14 +35,15 @@ use std::net::{IpAddr, SocketAddr};
 /// # Examples
 ///
 /// ```rust
-/// use axum::http::HeaderMap;
-/// use std::net::IpAddr;
-/// 
+/// use axum::http::{HeaderMap, HeaderValue};
+/// use speicherwald::middleware::ip::extract_ip_from_headers;
+/// use std::net::{IpAddr, Ipv4Addr};
+///
 /// let mut headers = HeaderMap::new();
-/// headers.insert("x-forwarded-for", "203.0.113.1, 10.0.0.1");
-/// 
+/// headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.1, 10.0.0.1"));
+///
 /// let client_ip = extract_ip_from_headers(&headers, None);
-/// assert_eq!(client_ip, IpAddr::V4(203, 0, 113, 1));
+/// assert_eq!(client_ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
 /// ```
 pub fn extract_ip_from_headers(headers: &HeaderMap, fallback: Option<IpAddr>) -> IpAddr {
     // FIX Bug #1: Prioritize X-Real-IP as it's often set by the immediate proxy
@@ -86,8 +87,8 @@ pub fn extract_ip_from_headers(headers: &HeaderMap, fallback: Option<IpAddr>) ->
 /// # Examples
 ///
 /// ```rust
-/// use axum::{extract::Request, middleware::Next, response::Response};
-/// 
+/// use speicherwald::middleware::ip::MaybeRemoteAddr;
+///
 /// async fn handler(addr: MaybeRemoteAddr) -> String {
 ///     match addr.0 {
 ///         Some(socket_addr) => format!("Connected from {}", socket_addr),

@@ -1,5 +1,3 @@
-// FIX Bug #19: Removed dead_code annotation - address dead code properly
-
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -14,6 +12,7 @@ use std::fmt;
 /// This enum consolidates all possible errors that can occur within the application,
 /// providing a unified way to handle and respond to failures.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum AppError {
     /// For internal server errors that are not expected to be handled by the client.
     Internal(anyhow::Error),
@@ -194,6 +193,7 @@ pub type AppResult<T> = Result<T, AppError>;
 
 /// An extension trait for `Option` that provides a convenient way to convert
 /// an `Option` to a `Result` with a `NotFound` error.
+#[allow(dead_code)]
 pub trait OptionExt<T> {
     /// Converts an `Option<T>` to a `Result<T, AppError>`.
     ///
@@ -215,6 +215,7 @@ impl<T> OptionExt<T> for Option<T> {
 }
 
 /// A module containing helper functions for request validation.
+#[allow(dead_code)]
 pub mod validation {
     use super::*;
     use std::path::Path;

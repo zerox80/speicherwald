@@ -33,11 +33,17 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Lint backend
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Test backend
         run: cargo test --verbose
 
       - name: Build backend release
         run: cargo build --release --verbose
+
+      - name: Lint Web UI crate
+        run: cargo clippy --manifest-path webui/Cargo.toml --all-targets -- -D warnings
 
       - name: Test Web UI crate
         run: cargo test --manifest-path webui/Cargo.toml --verbose

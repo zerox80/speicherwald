@@ -5,6 +5,7 @@
 //! These utilities are used throughout the application to ensure consistent
 //! path handling regardless of the underlying platform.
 
+#[cfg(windows)]
 use std::path::Path;
 
 /// Windows-specific function to get the volume root for a given path.
@@ -44,23 +45,4 @@ pub fn get_volume_root(path: &Path) -> String {
 
     // Default to C:
     "C:\\".to_string()
-}
-
-/// Non-Windows fallback function for getting the volume root.
-///
-/// On Unix-like systems (Linux, macOS, etc.), there is a single unified
-/// filesystem hierarchy starting at the root directory `/`. This function
-/// provides a consistent interface across platforms by always returning the
-/// Unix root path.
-///
-/// # Arguments
-///
-/// * `_path` - The path parameter is ignored on non-Windows systems
-///
-/// # Returns
-///
-/// Always returns `"/"` - the Unix root directory
-#[cfg(not(windows))]
-pub fn get_volume_root(_path: &Path) -> String {
-    "/".to_string()
 }

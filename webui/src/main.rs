@@ -33,6 +33,54 @@ mod types;
 mod ui_utils;
 use ui_utils::{fmt_bytes, fmt_ago_short, copy_to_clipboard, download_csv, trigger_download, show_toast};
 
+const TREE_LIMIT_MIN: i64 = 10;
+const TREE_LIMIT_DEFAULT: i64 = 500;
+const TREE_LIMIT_STEP: i64 = 200;
+const TREE_LIMIT_MAX: i64 = 2_000;
+
+fn clamp_tree_limit(limit: i64) -> i64 {
+    limit.clamp(TREE_LIMIT_MIN, TREE_LIMIT_MAX)
+}
+
+fn valid_tree_limit_input(value: &str) -> Option<i64> {
+    let parsed = value.trim().parse::<i64>().ok()?;
+    (TREE_LIMIT_MIN..=TREE_LIMIT_MAX).contains(&parsed).then_some(parsed)
+}
+
+fn commit_tree_limit_input(value: &str, fallback: i64) -> i64 {
+    value.trim().parse::<i64>().map(clamp_tree_limit).unwrap_or_else(|_| clamp_tree_limit(fallback))
+}
+
+fn tree_limit_display_value(limit: i64) -> String {
+    clamp_tree_limit(limit).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamps_tree_limit_to_ui_bounds() {
+        assert_eq!(clamp_tree_limit(1), TREE_LIMIT_MIN);
+        assert_eq!(clamp_tree_limit(TREE_LIMIT_DEFAULT), TREE_LIMIT_DEFAULT);
+        assert_eq!(clamp_tree_limit(20_000), TREE_LIMIT_MAX);
+    }
+
+    #[test]
+    fn tree_limit_input_accepts_only_complete_in_range_values() {
+        assert_eq!(valid_tree_limit_input("2"), None);
+        assert_eq!(valid_tree_limit_input("2000"), Some(TREE_LIMIT_MAX));
+        assert_eq!(valid_tree_limit_input("2001"), None);
+    }
+
+    #[test]
+    fn committing_tree_limit_clamps_or_preserves_fallback() {
+        assert_eq!(commit_tree_limit_input("2", TREE_LIMIT_DEFAULT), TREE_LIMIT_MIN);
+        assert_eq!(commit_tree_limit_input("20000", TREE_LIMIT_DEFAULT), TREE_LIMIT_MAX);
+        assert_eq!(commit_tree_limit_input("abc", 250), 250);
+    }
+}
+
 /// State for the move/copy dialog functionality.
 ///
 /// Manages the UI state and data for the file move/copy dialog,
@@ -338,7 +386,8 @@ fn Scan(id: String) -> Element {
     // Steuerung für Baum/Top
     let tree_path = use_signal(|| None as Option<String>);
     let tree_depth = use_signal(|| 3_i64);
-    let tree_limit = use_signal(|| 20_000_i64);
+    let tree_limit = use_signal(|| TREE_LIMIT_DEFAULT);
+    let tree_limit_input = use_signal(|| tree_limit_display_value(TREE_LIMIT_DEFAULT));
     let tree_sort = use_signal(|| "size".to_string()); // server hint: "size" | "name"
     // Client-side sort controls for Tree table
     let tree_sort_view = use_signal(|| "allocated".to_string()); // allocated|logical|name|type|modified
@@ -359,6 +408,7 @@ fn Scan(id: String) -> Element {
     let list_has_more = use_signal(|| true);
     // Sequence ID to drop stale responses when multiple requests overlap
     let list_req_id = use_signal(|| 0_i64);
+    let tree_req_id = use_signal(|| 0_i64);
     // Move dialog & drive targets
     let move_dialog = use_signal(|| None as Option<MoveDialogState>);
     let drive_targets = use_signal(|| Vec::<types::DriveInfo>::new());
@@ -419,9 +469,7 @@ fn Scan(id: String) -> Element {
     let export_limit = use_signal(|| 10000_i64);
 
     // Live-Update & Throttle
-    let live_update = use_signal(|| true);
     let last_refresh = use_signal(|| 0.0_f64);
-    let active_tab = use_signal(|| "explorer".to_string());
 
     // KPI initial laden
     {
@@ -473,18 +521,25 @@ fn Scan(id: String) -> Element {
         let err_tree_state = err_tree.clone();
         let err_top_state = err_top.clone();
         let loading_tree_state = loading_tree.clone();
+        let tree_req_state = tree_req_id.clone();
         use_effect(move || {
             let id = id_state.clone();
             let tree_items = tree_items_state.clone();
             let tree_path = tree_path_state.read().clone();
             let tree_depth = *tree_depth_state.read();
-            let tree_limit = *tree_limit_state.read();
+            let tree_limit = clamp_tree_limit(*tree_limit_state.read());
             let tree_sort = tree_sort_state.read().clone();
             let top_items = top_items_state.clone();
             let top_scope = top_scope_state.read().clone();
             let err_tree = err_tree_state.clone();
             let err_top = err_top_state.clone();
             let mut loading_tree = loading_tree_state.clone();
+            let mut tree_req = tree_req_state.clone();
+            let request_id = {
+                let mut rid = tree_req.write();
+                *rid += 1;
+                *rid
+            };
 
             *loading_tree.write() = true;
 
@@ -494,6 +549,7 @@ fn Scan(id: String) -> Element {
                 let mut loading_tree = loading_tree.clone();
                 let mut top_items = top_items.clone();
                 let mut err_top = err_top.clone();
+                let tree_req = tree_req.clone();
                 let tq = api::TreeQuery {
                     path: tree_path,
                     depth: Some(tree_depth),
@@ -503,15 +559,19 @@ fn Scan(id: String) -> Element {
 
                 match api::get_tree(&id, &tq).await {
                     Ok(list) => {
-                        *tree_items.write() = list;
-                        *err_tree.write() = None;
+                        if *tree_req.read() == request_id {
+                            *tree_items.write() = list;
+                            *err_tree.write() = None;
+                            *loading_tree.write() = false;
+                        }
                     }
                     Err(e) => {
-                        *err_tree.write() = Some(e);
+                        if *tree_req.read() == request_id {
+                            *err_tree.write() = Some(e);
+                            *loading_tree.write() = false;
+                        }
                     }
                 }
-
-                *loading_tree.write() = false;
 
                 let qq = api::TopQuery {
                     scope: Some(top_scope),
@@ -685,23 +745,44 @@ fn Scan(id: String) -> Element {
         let tree_sort_state = tree_sort.clone();
         let e_tree = err_tree.clone();
         let l_tree = loading_tree.clone();
+        let tree_req_state = tree_req_id.clone();
         Rc::new(move || {
             let id_c = id_val.clone();
             let tree_items2 = tree_items_state.clone();
             let q_path = tree_path_state.read().clone();
             let q_depth = *tree_depth_state.read();
-            let q_limit = *tree_limit_state.read();
+            let q_limit = clamp_tree_limit(*tree_limit_state.read());
             let q_sort = tree_sort_state.read().clone();
             let e2 = e_tree.clone();
             let mut l2 = l_tree.clone();
+            let mut tree_req = tree_req_state.clone();
+            let request_id = {
+                let mut rid = tree_req.write();
+                *rid += 1;
+                *rid
+            };
             l2.set(true);
             wasm_bindgen_futures::spawn_local(async move {
                 let mut tree_items2 = tree_items2.clone();
                 let mut e2 = e2.clone();
                 let mut l2 = l2.clone();
+                let tree_req = tree_req.clone();
                 let q = api::TreeQuery { path: q_path, depth: Some(q_depth), sort: Some(q_sort), limit: Some(q_limit) };
-                match api::get_tree(&id_c, &q).await { Ok(list) => { tree_items2.set(list); e2.set(None); }, Err(e) => e2.set(Some(e)) }
-                l2.set(false);
+                match api::get_tree(&id_c, &q).await {
+                    Ok(list) => {
+                        if *tree_req.read() == request_id {
+                            tree_items2.set(list);
+                            e2.set(None);
+                            l2.set(false);
+                        }
+                    },
+                    Err(e) => {
+                        if *tree_req.read() == request_id {
+                            e2.set(Some(e));
+                            l2.set(false);
+                        }
+                    }
+                }
             });
         })
     };
@@ -782,6 +863,9 @@ fn Scan(id: String) -> Element {
         let tree_depth_h = tree_depth.clone();
         let tree_limit_h = tree_limit.clone();
         let tree_sort_h = tree_sort.clone();
+        let tree_req_h = tree_req_id.clone();
+        let loading_tree_h = loading_tree.clone();
+        let err_tree_h = err_tree.clone();
         let top_items_h = top_items.clone();
         let top_scope_h = top_scope.clone();
         let list_items_h = list_items.clone();
@@ -909,24 +993,50 @@ fn Scan(id: String) -> Element {
                             }
                         });
 
-                        let id_tree = id_for_cb.clone();
-                        let tree_items2 = tree_items_h.clone();
-                        let q_path = tree_path_h.read().clone();
-                        let q_depth = *tree_depth_h.read();
-                        let q_limit = *tree_limit_h.read();
-                        let q_sort = tree_sort_h.read().clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let mut tree_items2 = tree_items2.clone();
-                            let q = api::TreeQuery {
-                                path: q_path,
-                                depth: Some(q_depth),
-                                sort: Some(q_sort),
-                                limit: Some(q_limit),
+                        if !*loading_tree_h.read() {
+                            let id_tree = id_for_cb.clone();
+                            let tree_items2 = tree_items_h.clone();
+                            let q_path = tree_path_h.read().clone();
+                            let q_depth = *tree_depth_h.read();
+                            let q_limit = clamp_tree_limit(*tree_limit_h.read());
+                            let q_sort = tree_sort_h.read().clone();
+                            let mut tree_req = tree_req_h.clone();
+                            let mut loading_tree = loading_tree_h.clone();
+                            let err_tree = err_tree_h.clone();
+                            let request_id = {
+                                let mut rid = tree_req.write();
+                                *rid += 1;
+                                *rid
                             };
-                            if let Ok(list) = api::get_tree(&id_tree, &q).await {
-                                tree_items2.set(list);
-                            }
-                        });
+                            loading_tree.set(true);
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let mut tree_items2 = tree_items2.clone();
+                                let mut loading_tree = loading_tree.clone();
+                                let mut err_tree = err_tree.clone();
+                                let tree_req = tree_req.clone();
+                                let q = api::TreeQuery {
+                                    path: q_path,
+                                    depth: Some(q_depth),
+                                    sort: Some(q_sort),
+                                    limit: Some(q_limit),
+                                };
+                                match api::get_tree(&id_tree, &q).await {
+                                    Ok(list) => {
+                                        if *tree_req.read() == request_id {
+                                            tree_items2.set(list);
+                                            err_tree.set(None);
+                                            loading_tree.set(false);
+                                        }
+                                    },
+                                    Err(e) => {
+                                        if *tree_req.read() == request_id {
+                                            err_tree.set(Some(e));
+                                            loading_tree.set(false);
+                                        }
+                                    }
+                                }
+                            });
+                        }
 
                         if !*loading_list_h.read() {
                             let id_list = id_for_cb.clone();
@@ -1014,13 +1124,31 @@ fn Scan(id: String) -> Element {
     // Tree Komfort-Buttons
     let more_tree = {
         let tree_limit = tree_limit.clone();
+        let tree_limit_input = tree_limit_input.clone();
         let do_btn = do_load_tree.clone();
-        move |_| { let current_limit = *tree_limit.read(); let mut tree_limit = tree_limit.clone(); tree_limit.set(current_limit + 200); (do_btn.as_ref())(); }
+        move |_| {
+            let current_limit = *tree_limit.read();
+            let mut tree_limit = tree_limit.clone();
+            let next_limit = clamp_tree_limit(current_limit + TREE_LIMIT_STEP);
+            tree_limit.set(next_limit);
+            let mut tree_limit_input = tree_limit_input.clone();
+            tree_limit_input.set(tree_limit_display_value(next_limit));
+            (do_btn.as_ref())();
+        }
     };
     let less_tree = {
         let tree_limit = tree_limit.clone();
+        let tree_limit_input = tree_limit_input.clone();
         let do_btn = do_load_tree.clone();
-        move |_| { let current_limit = *tree_limit.read(); let v = (current_limit - 200).max(10); let mut tree_limit = tree_limit.clone(); tree_limit.set(v); (do_btn.as_ref())(); }
+        move |_| {
+            let current_limit = *tree_limit.read();
+            let mut tree_limit = tree_limit.clone();
+            let next_limit = clamp_tree_limit(current_limit - TREE_LIMIT_STEP);
+            tree_limit.set(next_limit);
+            let mut tree_limit_input = tree_limit_input.clone();
+            tree_limit_input.set(tree_limit_display_value(next_limit));
+            (do_btn.as_ref())();
+        }
     };
     // Explorer Paginierung
     let next_page = {
@@ -1915,10 +2043,31 @@ fn Scan(id: String) -> Element {
                         option { value: "name", "Name" }
                     }
                     span { "Limit:" }
-                    input { r#type: "number", min: "10", value: "{tree_limit}", oninput: move |e| {
-                            let value = e.value();
-                            let mut tree_limit = tree_limit.clone();
-                            if let Ok(v) = value.parse::<i64>() { tree_limit.set(v.max(10)); }
+                    input { r#type: "number", min: "{TREE_LIMIT_MIN}", max: "{TREE_LIMIT_MAX}", value: "{tree_limit_input}",
+                        oninput: {
+                            let tree_limit_input = tree_limit_input.clone();
+                            let tree_limit = tree_limit.clone();
+                            move |e| {
+                                let value = e.value();
+                                let mut tree_limit_input = tree_limit_input.clone();
+                                tree_limit_input.set(value.clone());
+                                if let Some(v) = valid_tree_limit_input(&value) {
+                                    let mut tree_limit = tree_limit.clone();
+                                    tree_limit.set(v);
+                                }
+                            }
+                        },
+                        onchange: {
+                            let tree_limit_input = tree_limit_input.clone();
+                            let tree_limit = tree_limit.clone();
+                            move |e| {
+                                let fallback = *tree_limit.read();
+                                let committed = commit_tree_limit_input(&e.value(), fallback);
+                                let mut tree_limit = tree_limit.clone();
+                                tree_limit.set(committed);
+                                let mut tree_limit_input = tree_limit_input.clone();
+                                tree_limit_input.set(tree_limit_display_value(committed));
+                            }
                         }
                     }
                     button { class: "btn", onclick: more_tree, "Mehr" }
@@ -2001,7 +2150,7 @@ fn Scan(id: String) -> Element {
                                                 if e.value() == "true" {
                                                     let sorted_indices = sorted_tree_indices.read();
                                                     let items = t_items_ref.read();
-                                                    let current_limit = *tree_limit.read() as usize;
+                                                    let current_limit = clamp_tree_limit(*tree_limit.read()) as usize;
                                                     let all_paths: std::vec::Vec<String> = sorted_indices.iter().take(current_limit).map(|&i| items[i].path.clone()).collect();
                                                     let all_paths_set: std::collections::HashSet<String> = all_paths.into_iter().collect();
                                                     sel.set(all_paths_set);
@@ -2061,7 +2210,7 @@ fn Scan(id: String) -> Element {
                         tbody {
                             { let indices = sorted_tree_indices.read().clone();
                               let t_items = tree_items.clone();
-                              indices.into_iter().take(*tree_limit.read() as usize).enumerate().map({
+                              indices.into_iter().take(clamp_tree_limit(*tree_limit.read()) as usize).enumerate().map({
                                 let filt_indices = sorted_tree_indices.read().clone();
                                 let t_items_ref = tree_items.clone();
                                 move |(idx, real_idx)| {

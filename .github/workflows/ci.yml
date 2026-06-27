@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test backend
+        run: cargo test --verbose
+
+      - name: Build backend release
+        run: cargo build --release --verbose
+
+      - name: Test Web UI crate
+        run: cargo test --manifest-path webui/Cargo.toml --verbose
+
+  package-windows:
+    name: Package Windows portable ZIP
+    runs-on: windows-latest
+    needs: build-test
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Rust with WASM target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install Trunk
+        run: cargo install trunk --locked
+
+      - name: Build portable ZIP
+        run: python scripts/package_portable.py --include-desktop --desktop-required
+
+      - name: Verify portable ZIP contents
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          $zip = Get-ChildItem -Path dist -Filter '*.zip' | Select-Object -First 1
+          if (-not $zip) {
+            throw 'No portable ZIP was created in dist/.'
+          }
+
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
+          try {
+            $entries = $archive.Entries | ForEach-Object { $_.FullName }
+          } finally {
+            $archive.Dispose()
+          }
+
+          $required = @(
+            'speicherwald.exe',
+            'ui/index.html',
+            'RUN-SpeicherWald.cmd',
+            'speicherwald-desktop.exe',
+            'RUN-Desktop.cmd'
+          )
+
+          foreach ($entry in $required) {
+            if ($entries -notcontains $entry) {
+              throw "Portable ZIP is missing required entry: $entry"
+            }
+          }
+
+          Write-Host "Portable ZIP verified: $($zip.FullName)"
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v6
+        with:
+          name: speicherwald-portable-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30

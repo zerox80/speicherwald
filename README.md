@@ -453,12 +453,11 @@ If you still encounter `429 Too Many Requests` (e.g., rapid manual navigation), 
 
 The GitHub Actions workflow at `.github/workflows/ci.yml` runs on Windows and Ubuntu:
 
-- Formatting and Clippy
-- Tests on stable Rust (normal and all-features)
-- Code coverage on Ubuntu via `cargo-tarpaulin` with upload to Codecov
-- Release build and UI build
-- Windows-only benches build (`cargo bench --no-run`)
-- Optional jobs package a portable ZIP and build the desktop app, uploaded as artifacts
+- Backend tests and release builds on stable Rust
+- Web UI crate tests
+- On pushes to `main` and manual runs, a Windows portable ZIP is built and uploaded as an artifact
+- The ZIP contains `speicherwald.exe`, the built `ui/` folder, `RUN-SpeicherWald.cmd`, and the desktop launcher when available
+- The packaging job verifies the required ZIP entries before upload
 
 ## 📦 Packaging & Distribution
 

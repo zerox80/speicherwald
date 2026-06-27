@@ -57,6 +57,12 @@ def which(name: str) -> bool:
     return _which(name) is not None
 
 
+def trunk_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    env.pop("NO_COLOR", None)
+    return env
+
+
 def read_version_from_cargo() -> str:
     cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8", errors="ignore")
     # naive parse
@@ -90,7 +96,7 @@ def build_webui() -> None:
         print(f"skip: {WEBUI_DIR} does not exist – nothing to build for UI")
         return
     # Build UI (Trunk outputs to ../ui per webui/Trunk.toml)
-    run(["trunk", "build", "--release"], cwd=WEBUI_DIR)
+    run(["trunk", "build", "--release"], cwd=WEBUI_DIR, env=trunk_env())
     if not (UI_OUT_DIR / "index.html").exists():
         raise RuntimeError("UI build did not produce ui/index.html – please check Trunk errors above")
 
@@ -196,7 +202,14 @@ def stage_and_zip(exe_path: Path, version: str, desktop_exe: Optional[Path] = No
 def main() -> None:
     parser = argparse.ArgumentParser(description="Package SpeicherWald portable ZIP")
     parser.add_argument("--include-desktop", action="store_true", help="Include Tauri Desktop GUI (Windows only)")
+    parser.add_argument(
+        "--desktop-required",
+        action="store_true",
+        help="Fail if --include-desktop cannot add the desktop executable",
+    )
     args = parser.parse_args()
+    if args.desktop_required and not args.include_desktop:
+        parser.error("--desktop-required requires --include-desktop")
 
     print("SpeicherWald portable packager\n")
     version = read_version_from_cargo()
@@ -210,7 +223,11 @@ def main() -> None:
         try:
             desktop_exe = build_desktop()
         except Exception as e:
+            if args.desktop_required:
+                raise
             print(f"warning: desktop build failed: {e}")
+        if args.desktop_required and desktop_exe is None:
+            raise RuntimeError("desktop build was required but did not produce an executable")
     zip_path = stage_and_zip(exe, version, desktop_exe)
 
     print("\nAll done.")

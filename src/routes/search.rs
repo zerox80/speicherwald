@@ -194,7 +194,6 @@ fn sanitize_search_term(raw: &str) -> Result<String, AppError> {
     Ok(sanitized)
 }
 
-
 /// Searches for files and directories within a scan.
 ///
 /// This endpoint supports full-text search, size filtering, and type filtering.
@@ -236,7 +235,7 @@ pub async fn search_scan(
     // We'll execute a single UNION query with global ORDER+LIMIT+OFFSET.
     // Clamp to keep resource usage bounded even with large offsets. (FIX Bug #19)
     let limit_clamped = query.limit.clamp(1, 1000);
-    let offset_clamped = query.offset.max(0).min(10_000); // Prevent excessive offset and performance issues
+    let offset_clamped = query.offset.clamp(0, 10_000); // Prevent excessive offset and performance issues
 
     // Validate that offset + limit doesn't overflow
     if let Some(_overflow) = offset_clamped.checked_add(limit_clamped) {
@@ -370,10 +369,8 @@ pub async fn search_scan(
             });
         } else {
             // Extract file extension properly with better validation (FIX Bug #4)
-            let extension = std::path::Path::new(&path)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .and_then(|ext| {
+            let extension =
+                std::path::Path::new(&path).extension().and_then(|ext| ext.to_str()).and_then(|ext| {
                     // Validate extension:
                     // 1. Not empty
                     // 2. No path separators in extension (Path::extension handles this mostly, but good to double check)

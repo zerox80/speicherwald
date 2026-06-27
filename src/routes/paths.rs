@@ -39,19 +39,18 @@ use chrono::Utc;
 use tokio::task::spawn_blocking;
 use walkdir::WalkDir;
 
+#[cfg(windows)]
+use crate::routes::paths_helpers::get_volume_root;
 use crate::{
     error::{AppError, AppResult},
     middleware::{
         ip::{extract_ip_from_headers, MaybeRemoteAddr},
-        validation::{sanitize_for_logging, validate_file_path},
+        validation::validate_file_path,
     },
-    routes::paths_helpers::get_volume_root,
     state::AppState,
-
     types::{MovePathRequest, MovePathResponse},
 };
 use tokio_util::sync::CancellationToken;
-
 
 /// Result of a move/copy operation.
 ///
@@ -110,7 +109,7 @@ pub async fn move_path(
     for (i, src) in req.sources.iter().enumerate() {
         let src_trimmed = src.trim();
         let dest_trimmed = req.destinations[i].trim();
-        
+
         if src_trimmed.is_empty() {
             return Err(AppError::BadRequest("source path must not be empty".into()));
         }
@@ -153,7 +152,7 @@ pub async fn move_path(
     // FIX Bug #6: Add cancellation token for detached task cleanup
     let cancel_token = CancellationToken::new();
     let cancel_child = cancel_token.clone();
-    
+
     let outcome = tokio::select! {
         res = spawn_blocking(move || perform_moves(job_req, cancel_child)) => {
             res.map_err(|e| AppError::Internal(anyhow!("move task join error: {}", e)))?
@@ -195,7 +194,7 @@ fn perform_moves(req: MovePathRequest, cancel: CancellationToken) -> AppResult<M
 
         let source_str = &req.sources[i];
         let dest_str = &req.destinations[i];
-        
+
         // Use a dummy req for each operation to pass the overwrite and remove_source flags down
         let item_req = MovePathRequest {
             sources: vec![source_str.clone()],
@@ -203,14 +202,14 @@ fn perform_moves(req: MovePathRequest, cancel: CancellationToken) -> AppResult<M
             remove_source: req.remove_source,
             overwrite: req.overwrite,
         };
-        
+
         match perform_single_move(&item_req, &cancel) {
             Ok(outcome) => {
                 total_bytes_to_transfer += outcome.bytes_to_transfer;
                 total_bytes_moved += outcome.bytes_moved;
                 total_freed_bytes += outcome.freed_bytes;
                 all_warnings.extend(outcome.warnings);
-            },
+            }
             Err(e) => {
                 all_warnings.push(format!("Failed to move {}: {}", source_str, e));
                 // Continue with the next item instead of failing the whole batch
@@ -218,7 +217,12 @@ fn perform_moves(req: MovePathRequest, cancel: CancellationToken) -> AppResult<M
         }
     }
 
-    Ok(MoveOutcome { bytes_to_transfer: total_bytes_to_transfer, bytes_moved: total_bytes_moved, freed_bytes: total_freed_bytes, warnings: all_warnings })
+    Ok(MoveOutcome {
+        bytes_to_transfer: total_bytes_to_transfer,
+        bytes_moved: total_bytes_moved,
+        freed_bytes: total_freed_bytes,
+        warnings: all_warnings,
+    })
 }
 
 fn perform_single_move(req: &MovePathRequest, cancel: &CancellationToken) -> AppResult<MoveOutcome> {
@@ -246,68 +250,67 @@ fn perform_single_move(req: &MovePathRequest, cancel: &CancellationToken) -> App
     let bytes_to_transfer =
         if metadata.is_dir() { compute_directory_size(&source_path, &mut warnings)? } else { metadata.len() };
 
-    // FIX Bug #34: Check available disk space before proceeding
     if !req.remove_source {
-        // For copy operations, check if destination has enough space
         if let Some(parent) = dest_path.parent() {
-            #[cfg(windows)]
-            {
-                use std::os::windows::ffi::OsStrExt;
-                use windows::core::PCWSTR;
-                use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-                
-                let root_path = get_volume_root(parent);
-                let w: Vec<u16> = std::ffi::OsStr::new(&root_path)
-                    .encode_wide()
-                    .chain(std::iter::once(0))
-                    .collect();
-                
-                unsafe {
-                    let mut free_bytes_available = 0u64;
-                    if GetDiskFreeSpaceExW(
-                        PCWSTR(w.as_ptr()),
-                        Some(&mut free_bytes_available),
-                        None,
-                        None,
-                    ).is_ok() {
-                        // Add 10% buffer for safety
-                        let required = bytes_to_transfer + (bytes_to_transfer / 10);
-                        if free_bytes_available < required {
-                            return Err(AppError::BadRequest(format!(
-                                "Insufficient disk space: {} available, {} required",
-                                free_bytes_available, required
-                            )));
-                        }
-                    }
-                }
-            }
-            #[cfg(unix)]
-            {
-                // Unix disk space check could be added here using statvfs
-                tracing::debug!("Disk space check not implemented on Unix");
-            }
+            ensure_destination_space(parent, bytes_to_transfer)?;
         }
     }
 
     let bytes_moved = if metadata.is_file() {
-        move_file(&source_path, &dest_path, req, cancel)?
+        move_file(&source_path, &dest_path, req, &mut warnings, bytes_to_transfer, cancel)?
     } else if metadata.is_dir() {
-        move_directory(&source_path, &dest_path, req, &mut warnings, cancel)?
+        move_directory(&source_path, &dest_path, req, &mut warnings, bytes_to_transfer, cancel)?
     } else {
         return Err(AppError::BadRequest("source must refer to a file or directory".into()));
     };
 
     // FIX Bug #8: Correctly calculate freed bytes.
-    let freed_bytes = if req.remove_source && !source_path.exists() { 
-        bytes_to_transfer 
-    } else { 
-        0 
-    };
+    let freed_bytes = if req.remove_source && !source_path.exists() { bytes_to_transfer } else { 0 };
 
     Ok(MoveOutcome { bytes_to_transfer, bytes_moved, freed_bytes, warnings })
 }
 
-fn move_file(source: &Path, destination: &Path, req: &MovePathRequest, cancel: &CancellationToken) -> AppResult<u64> {
+fn ensure_destination_space(parent: &Path, bytes_to_transfer: u64) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+        let root_path = get_volume_root(parent);
+        let w: Vec<u16> = std::ffi::OsStr::new(&root_path).encode_wide().chain(std::iter::once(0)).collect();
+
+        unsafe {
+            let mut free_bytes_available = 0u64;
+            if GetDiskFreeSpaceExW(PCWSTR(w.as_ptr()), Some(&mut free_bytes_available), None, None).is_ok() {
+                let required = bytes_to_transfer.saturating_add(bytes_to_transfer / 10);
+                if free_bytes_available < required {
+                    return Err(AppError::BadRequest(format!(
+                        "Insufficient disk space: {} available, {} required",
+                        free_bytes_available, required
+                    )));
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (parent, bytes_to_transfer);
+        tracing::debug!("Disk space check not implemented on this platform");
+    }
+
+    Ok(())
+}
+
+fn move_file(
+    source: &Path,
+    destination: &Path,
+    req: &MovePathRequest,
+    warnings: &mut Vec<String>,
+    bytes_to_transfer: u64,
+    cancel: &CancellationToken,
+) -> AppResult<u64> {
     if cancel.is_cancelled() {
         return Err(AppError::Internal(anyhow!("Operation cancelled")));
     }
@@ -351,17 +354,24 @@ fn move_file(source: &Path, destination: &Path, req: &MovePathRequest, cancel: &
                 // fs::copy overwrites by default.
                 // If overwrite=false, we MUST check.
                 if !req.overwrite && destination.exists() {
-                     return Err(AppError::Conflict(format!("destination file already exists: {}", destination.display())));
+                    return Err(AppError::Conflict(format!(
+                        "destination file already exists: {}",
+                        destination.display()
+                    )));
                 }
 
+                if let Some(parent) = destination.parent() {
+                    ensure_destination_space(parent, bytes_to_transfer)?;
+                }
                 let copied = copy_file(source, destination, cancel)?;
-                // FIX Bug #8: Handle partial failure (copy success, delete fail)
                 if let Err(e) = fs::remove_file(source) {
-
-                    tracing::warn!("Failed to remove source file after copy: {} ({})", source.display(), e);
-                    // We return success because the data is safe at destination, but source remains.
-                    // Ideally we should warn the user, but we can't easily propagate warnings from here
-                    // without changing the signature. For now, logging must suffice.
+                    let msg = format!(
+                        "Warning: source file could not be removed after copy fallback: {} ({})",
+                        source.display(),
+                        e
+                    );
+                    tracing::warn!("{}", msg);
+                    warnings.push(msg);
                 }
                 return Ok(copied);
             }
@@ -376,6 +386,7 @@ fn move_directory(
     destination: &Path,
     req: &MovePathRequest,
     warnings: &mut Vec<String>,
+    bytes_to_transfer: u64,
     cancel: &CancellationToken,
 ) -> AppResult<u64> {
     if destination.exists() {
@@ -405,10 +416,17 @@ fn move_directory(
                     source.display(),
                     err.kind()
                 );
-                let bytes = copy_directory(source, destination, req.overwrite, req.remove_source, warnings, cancel)?;
-                // FIX Bug #8: Handle partial failure (copy success, delete fail)
+                if let Some(parent) = destination.parent() {
+                    ensure_destination_space(parent, bytes_to_transfer)?;
+                }
+                let bytes =
+                    copy_directory(source, destination, req.overwrite, req.remove_source, warnings, cancel)?;
                 if let Err(e) = fs::remove_dir_all(source) {
-                    let msg = format!("Warnung: Quellordner konnte nach Verschieben nicht gelöscht werden: {}", e);
+                    let msg = format!(
+                        "Warning: source directory could not be removed after copy fallback: {} ({})",
+                        source.display(),
+                        e
+                    );
                     tracing::warn!("{}", msg);
                     warnings.push(msg);
                 }
@@ -475,9 +493,9 @@ fn copy_directory(
             }
         };
         if cancel.is_cancelled() {
-             // FIX Bug #5: Always rollback partial copies on cancellation to prevent garbage
-             rollback_partial(&created_files, &created_dirs);
-             return Err(AppError::Internal(anyhow!("Operation cancelled")));
+            // FIX Bug #5: Always rollback partial copies on cancellation to prevent garbage
+            rollback_partial(&created_files, &created_dirs);
+            return Err(AppError::Internal(anyhow!("Operation cancelled")));
         }
         let rel = match entry.path().strip_prefix(source) {
             Ok(r) => r,
@@ -517,7 +535,8 @@ fn copy_directory(
             if let Ok(metadata) = entry.metadata() {
                 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
                 if (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-                    warnings.push(format!("Reparse point/junction uebersprungen: {}", entry.path().display()));
+                    warnings
+                        .push(format!("Reparse point/junction uebersprungen: {}", entry.path().display()));
                     continue;
                 }
             }
@@ -548,10 +567,7 @@ fn copy_directory(
                         target.display()
                     )));
                 } else {
-                    warnings.push(format!(
-                        "Ordner bereits vorhanden, uebersprungen: {}",
-                        target.display()
-                    ));
+                    warnings.push(format!("Ordner bereits vorhanden, uebersprungen: {}", target.display()));
                     continue;
                 }
             } else if overwrite {

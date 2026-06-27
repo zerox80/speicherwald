@@ -150,7 +150,10 @@ pub async fn run_scan(
     let channel_size = match concurrency.checked_mul(8).and_then(|v| v.checked_add(128)) {
         Some(size) => size.clamp(256, 2048),
         None => {
-            tracing::warn!("Channel size calculation overflow for concurrency={}, using default 2048", concurrency);
+            tracing::warn!(
+                "Channel size calculation overflow for concurrency={}, using default 2048",
+                concurrency
+            );
             2048
         }
     };
@@ -325,7 +328,6 @@ pub async fn run_scan(
                                 if tx_res_cl.is_closed() {
                                     return; // Stop processing if receiver is gone (Zombie prevention)
                                 }
-
                             }
                         }
                     }
@@ -353,7 +355,7 @@ pub async fn run_scan(
             let mut running: Vec<std::thread::JoinHandle<ScanResultSummary>> = Vec::new();
             let sub_count = subdirs.len();
             // Cap dir_limit to prevent resource exhaustion
-            let dir_limit = dir_conc.max(1).min(64);
+            let dir_limit = dir_conc.clamp(1, 64);
             let mut sub_dirs_total: u64 = 0;
             let mut sub_files_total: u64 = 0;
             let mut subtree_logical: u64 = 0;
@@ -393,10 +395,16 @@ pub async fn run_scan(
                             let _ = tx_res_sub.blocking_send((snodes, sfiles, delta));
                             ssum
                         }));
-                        result.unwrap_or_else(|_| {
-                            tracing::error!("Thread panicked during scan");
-                            ScanResultSummary::default()
-                        })
+                        match result {
+                            Ok(summary) => summary,
+                            Err(_) => {
+                                tracing::error!("Thread panicked during scan");
+                                let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
+                                let _ =
+                                    tx_res_sub.blocking_send((Vec::new(), Vec::new(), warn_summary.clone()));
+                                warn_summary
+                            }
+                        }
                     });
                     running.push(handle);
                 }
@@ -415,12 +423,8 @@ pub async fn run_scan(
                             Err(e) => {
                                 tracing::error!("Worker thread panicked: {:?}", e);
                                 // FIX Bug #3: Track panic as warning to avoid silent data loss
-                                let mut warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
-                                // accumulate into root aggregates
-                                subtree_logical = subtree_logical.saturating_add(warn_summary.total_logical_size);
-                                subtree_alloc = subtree_alloc.saturating_add(warn_summary.total_allocated_size);
-                                sub_dirs_total = sub_dirs_total.saturating_add(warn_summary.total_dirs);
-                                sub_files_total = sub_files_total.saturating_add(warn_summary.total_files);
+                                let warn_summary = ScanResultSummary { warnings: 1, ..Default::default() };
+                                let _ = tx_res_cl.blocking_send((Vec::new(), Vec::new(), warn_summary));
                             }
                         }
                     }
@@ -640,6 +644,7 @@ fn scan_dir(
                             continue; // Don't recurse deeper
                         }
                     }
+                    let mut child_summary = ScanResultSummary::default();
                     let (d_dirs, d_files, d_logical, d_alloc) = scan_dir(
                         _scan_id,
                         &path,
@@ -648,12 +653,15 @@ fn scan_dir(
                         globset,
                         tx,
                         cancel,
-                        summary,
+                        &mut child_summary,
                         nodes,
                         files,
                         tx_out,
                         flush_threshold,
                     )?;
+                    summary.warnings = summary.warnings.saturating_add(child_summary.warnings);
+                    summary.latest_mtime = max_opt(summary.latest_mtime, child_summary.latest_mtime);
+                    summary.latest_atime = max_opt(summary.latest_atime, child_summary.latest_atime);
                     local_dirs += d_dirs;
                     local_files += d_files;
                     logical = logical.saturating_add(d_logical);
@@ -689,7 +697,7 @@ fn scan_dir(
                 sent = sent.saturating_add(1);
                 // Reduzierte Progress-Updates für bessere Performance
                 // FIX Bug #13: Remove redundant sent > 0 check (modulo handles zero)
-                if sent % 512 == 0 {
+                if sent.is_multiple_of(512) {
                     let _ = tx.send(ScanEvent::Progress {
                         current_path: path.to_string_lossy().to_string(),
                         dirs_scanned: summary.total_dirs + local_dirs,
@@ -804,7 +812,7 @@ fn matches_excludes(path: &Path, set: &GlobSet) -> bool {
     if s.contains('\u{FFFD}') {
         // FIX Bug #9: Allow invalid UTF-8 paths (they are lossy converted but should still be scanned)
         // tracing::warn!("Path contains invalid UTF-8: {:?}", path);
-        // return true; 
+        // return true;
     }
     let normalized = s.replace('\\', "/");
     if set.is_match(&normalized) {
@@ -817,7 +825,6 @@ fn matches_excludes(path: &Path, set: &GlobSet) -> bool {
         }
     }
     false
-
 }
 
 #[cfg(windows)]
@@ -888,10 +895,7 @@ fn is_hidden_or_system(_path: &Path, md: &fs::Metadata) -> bool {
 #[cfg(not(windows))]
 fn is_hidden_or_system(path: &Path, _md: &fs::Metadata) -> bool {
     // Check for dotfiles on Unix
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|s| s.starts_with('.'))
-        .unwrap_or(false)
+    path.file_name().and_then(|n| n.to_str()).map(|s| s.starts_with('.')).unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -1012,7 +1016,7 @@ async fn persist_batches(
         return Ok(());
     }
     let sid = id.to_string();
-    
+
     // Respect SQLite variable limit
     const SQLITE_MAX_VARS: usize = 999;
     const NODE_BINDS_PER_ROW: usize = 11;
@@ -1025,7 +1029,7 @@ async fn persist_batches(
     // chunk sizes for query construction
     let node_chunk_size = batch_size.max(1).min(max_node_rows_per_stmt.max(1));
     let file_chunk_size = batch_size.max(1).min(max_file_rows_per_stmt.max(1));
-    
+
     // FIX Bug #6: Commit intermediate transactions to avoid huge internal journals and locks
     let mut txdb = pool.begin().await?;
     let mut chunks_processed = 0;
@@ -1055,7 +1059,7 @@ async fn persist_batches(
                 .push_bind(n.atime);
         });
         qb.build().execute(&mut *txdb).await?;
-        
+
         chunks_processed += 1;
         if chunks_processed >= 5 {
             txdb.commit().await?;
@@ -1083,7 +1087,7 @@ async fn persist_batches(
                 .push_bind(f.atime);
         });
         qb.build().execute(&mut *txdb).await?;
-        
+
         chunks_processed += 1;
         if chunks_processed >= 5 {
             txdb.commit().await?;

@@ -14,9 +14,8 @@ pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, Statu
     // Check if auth is enabled via env var
     // FIX Bug #6: Cache the token lookup to avoid env var overhead on every request
     static AUTH_TOKEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    let expected_token_opt = AUTH_TOKEN.get_or_init(|| {
-        std::env::var("SPEICHERWALD_AUTH_TOKEN").ok().filter(|t| !t.is_empty())
-    });
+    let expected_token_opt =
+        AUTH_TOKEN.get_or_init(|| std::env::var("SPEICHERWALD_AUTH_TOKEN").ok().filter(|t| !t.is_empty()));
 
     let expected_token = match expected_token_opt {
         Some(t) => t,
@@ -24,10 +23,7 @@ pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, Statu
     };
 
     // Check header
-    let auth_header = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok());
+    let auth_header = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok());
 
     match auth_header {
         Some(auth_val) if auth_val.starts_with("Bearer ") => {

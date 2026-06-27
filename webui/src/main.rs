@@ -20,6 +20,8 @@
 //! - **Real-time**: SSE for live scan progress monitoring
 //! - **Error Handling**: User-friendly error messages and fallbacks
 
+#![allow(clippy::clone_on_copy, clippy::redundant_closure)]
+
 use dioxus::events::FormData;
 use dioxus::prelude::*;
 
@@ -463,10 +465,6 @@ fn Scan(id: String) -> Element {
             }
         });
     }
-
-    // Export-Steuerung
-    let export_scope = use_signal(|| "all".to_string()); // all|nodes|files
-    let export_limit = use_signal(|| 10000_i64);
 
     // Live-Update & Throttle
     let last_refresh = use_signal(|| 0.0_f64);
@@ -1546,7 +1544,9 @@ fn Scan(id: String) -> Element {
                                             }
                                         } else {
                                             show_toast("Keine vorherige Seite");
-                                            console::log_1(&format!("Prev click on page 1 (offset=0). No nav history. path=None").into());
+                                            console::log_1(
+                                                &"Prev click on page 1 (offset=0). No nav history. path=None".into(),
+                                            );
                                         }
                                     } else {
                                         // Remove current entry
@@ -2425,8 +2425,8 @@ fn Scan(id: String) -> Element {
                         // FIX Bug #16: Add bounds check for float to usize cast
                         if max_alloc_bar > 0 { 
                             let calc = ((alloc as f64) / (max_alloc_bar as f64) * 40.0).round();
-                            blocks = if calc >= 0.0 && calc <= 1000.0 {
-                                (calc as usize).max(1).min(1000)
+                            blocks = if (0.0..=1000.0).contains(&calc) {
+                                (calc as usize).clamp(1, 1000)
                             } else {
                                 1
                             };
@@ -2702,7 +2702,7 @@ fn move_dialog_view(
                                     if stripped_source.len() >= 3 && stripped_source.chars().nth(1) == Some(':') && (stripped_source.chars().nth(2) == Some('\\') || stripped_source.chars().nth(2) == Some('/')) {
                                         stripped_source = &stripped_source[3..];
                                     } else if stripped_source.starts_with("\\\\") || stripped_source.starts_with("//") {
-                                        let mut parts = stripped_source[2..].splitn(3, |c| c == '\\' || c == '/');
+                                        let mut parts = stripped_source[2..].splitn(3, ['\\', '/']);
                                         parts.next();
                                         parts.next();
                                         if let Some(rest) = parts.next() { stripped_source = rest; } else { stripped_source = ""; }
@@ -2923,7 +2923,7 @@ fn move_dialog_view(
                                             if stripped.len() >= 3 && stripped.chars().nth(1) == Some(':') && (stripped.chars().nth(2) == Some('\\') || stripped.chars().nth(2) == Some('/')) {
                                                 stripped = &stripped[3..];
                                             } else if stripped.starts_with("\\\\") || stripped.starts_with("//") {
-                                                let mut parts = stripped[2..].splitn(3, |c| c == '\\' || c == '/');
+                                                let mut parts = stripped[2..].splitn(3, ['\\', '/']);
                                                 parts.next(); parts.next();
                                                 if let Some(rest) = parts.next() { stripped = rest; } else { stripped = ""; }
                                             } else if stripped.starts_with('/') || stripped.starts_with('\\') {
@@ -3027,16 +3027,8 @@ fn move_dialog_view(
 }
 
 // ----- Styles & Helfer -----
-fn panel_style() -> &'static str {
-    "max-width:1200px;margin:20px auto;padding:16px;background:#0b0c10;color:#e5e7eb;border:1px solid #222533;border-radius:12px;"
-}
-
 fn btn_style() -> &'static str {
     "background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:6px 10px;cursor:pointer;"
-}
-
-fn btn_danger_style() -> &'static str {
-    "background:#7f1d1d;color:#fff;border:1px solid #991b1b;border-radius:8px;padding:6px 10px;cursor:pointer;"
 }
 
 fn btn_primary_style() -> &'static str {

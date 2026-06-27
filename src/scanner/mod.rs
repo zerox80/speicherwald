@@ -835,12 +835,6 @@ fn is_unc_path(path: &Path) -> bool {
     s.starts_with("\\\\?\\UNC\\") || s.starts_with("\\\\")
 }
 
-#[cfg(not(windows))]
-#[inline]
-fn is_unc_path(_path: &Path) -> bool {
-    false
-}
-
 #[cfg(windows)]
 #[inline]
 fn is_network_path(path: &Path) -> bool {
@@ -910,10 +904,13 @@ fn is_reparse_point(_md: &fs::Metadata) -> bool {
 }
 
 // Cache für häufig abgefragte Pfade
+#[cfg(windows)]
 use lru::LruCache;
+#[cfg(windows)]
 use std::sync::Mutex;
 
 // Configurable cache size via environment variable, default 10000
+#[cfg(windows)]
 fn get_cache_size() -> usize {
     std::env::var("SPEICHERWALD_SIZE_CACHE_ENTRIES")
         .ok()
@@ -922,6 +919,7 @@ fn get_cache_size() -> usize {
         .clamp(100, 100_000)
 }
 
+#[cfg(windows)]
 lazy_static::lazy_static! {
     static ref SIZE_CACHE: Mutex<LruCache<PathBuf, Option<u64>>> = {
         let size = get_cache_size();

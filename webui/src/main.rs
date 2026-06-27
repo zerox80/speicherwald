@@ -42,6 +42,45 @@ fn clamp_tree_limit(limit: i64) -> i64 {
     limit.clamp(TREE_LIMIT_MIN, TREE_LIMIT_MAX)
 }
 
+fn valid_tree_limit_input(value: &str) -> Option<i64> {
+    let parsed = value.trim().parse::<i64>().ok()?;
+    (TREE_LIMIT_MIN..=TREE_LIMIT_MAX).contains(&parsed).then_some(parsed)
+}
+
+fn commit_tree_limit_input(value: &str, fallback: i64) -> i64 {
+    value.trim().parse::<i64>().map(clamp_tree_limit).unwrap_or_else(|_| clamp_tree_limit(fallback))
+}
+
+fn tree_limit_display_value(limit: i64) -> String {
+    clamp_tree_limit(limit).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamps_tree_limit_to_ui_bounds() {
+        assert_eq!(clamp_tree_limit(1), TREE_LIMIT_MIN);
+        assert_eq!(clamp_tree_limit(TREE_LIMIT_DEFAULT), TREE_LIMIT_DEFAULT);
+        assert_eq!(clamp_tree_limit(20_000), TREE_LIMIT_MAX);
+    }
+
+    #[test]
+    fn tree_limit_input_accepts_only_complete_in_range_values() {
+        assert_eq!(valid_tree_limit_input("2"), None);
+        assert_eq!(valid_tree_limit_input("2000"), Some(TREE_LIMIT_MAX));
+        assert_eq!(valid_tree_limit_input("2001"), None);
+    }
+
+    #[test]
+    fn committing_tree_limit_clamps_or_preserves_fallback() {
+        assert_eq!(commit_tree_limit_input("2", TREE_LIMIT_DEFAULT), TREE_LIMIT_MIN);
+        assert_eq!(commit_tree_limit_input("20000", TREE_LIMIT_DEFAULT), TREE_LIMIT_MAX);
+        assert_eq!(commit_tree_limit_input("abc", 250), 250);
+    }
+}
+
 /// State for the move/copy dialog functionality.
 ///
 /// Manages the UI state and data for the file move/copy dialog,
@@ -348,6 +387,7 @@ fn Scan(id: String) -> Element {
     let tree_path = use_signal(|| None as Option<String>);
     let tree_depth = use_signal(|| 3_i64);
     let tree_limit = use_signal(|| TREE_LIMIT_DEFAULT);
+    let tree_limit_input = use_signal(|| tree_limit_display_value(TREE_LIMIT_DEFAULT));
     let tree_sort = use_signal(|| "size".to_string()); // server hint: "size" | "name"
     // Client-side sort controls for Tree table
     let tree_sort_view = use_signal(|| "allocated".to_string()); // allocated|logical|name|type|modified
@@ -1084,21 +1124,29 @@ fn Scan(id: String) -> Element {
     // Tree Komfort-Buttons
     let more_tree = {
         let tree_limit = tree_limit.clone();
+        let tree_limit_input = tree_limit_input.clone();
         let do_btn = do_load_tree.clone();
         move |_| {
             let current_limit = *tree_limit.read();
             let mut tree_limit = tree_limit.clone();
-            tree_limit.set(clamp_tree_limit(current_limit + TREE_LIMIT_STEP));
+            let next_limit = clamp_tree_limit(current_limit + TREE_LIMIT_STEP);
+            tree_limit.set(next_limit);
+            let mut tree_limit_input = tree_limit_input.clone();
+            tree_limit_input.set(tree_limit_display_value(next_limit));
             (do_btn.as_ref())();
         }
     };
     let less_tree = {
         let tree_limit = tree_limit.clone();
+        let tree_limit_input = tree_limit_input.clone();
         let do_btn = do_load_tree.clone();
         move |_| {
             let current_limit = *tree_limit.read();
             let mut tree_limit = tree_limit.clone();
-            tree_limit.set(clamp_tree_limit(current_limit - TREE_LIMIT_STEP));
+            let next_limit = clamp_tree_limit(current_limit - TREE_LIMIT_STEP);
+            tree_limit.set(next_limit);
+            let mut tree_limit_input = tree_limit_input.clone();
+            tree_limit_input.set(tree_limit_display_value(next_limit));
             (do_btn.as_ref())();
         }
     };
@@ -1995,10 +2043,31 @@ fn Scan(id: String) -> Element {
                         option { value: "name", "Name" }
                     }
                     span { "Limit:" }
-                    input { r#type: "number", min: "{TREE_LIMIT_MIN}", max: "{TREE_LIMIT_MAX}", value: "{tree_limit}", oninput: move |e| {
-                            let value = e.value();
-                            let mut tree_limit = tree_limit.clone();
-                            if let Ok(v) = value.parse::<i64>() { tree_limit.set(clamp_tree_limit(v)); }
+                    input { r#type: "number", min: "{TREE_LIMIT_MIN}", max: "{TREE_LIMIT_MAX}", value: "{tree_limit_input}",
+                        oninput: {
+                            let tree_limit_input = tree_limit_input.clone();
+                            let tree_limit = tree_limit.clone();
+                            move |e| {
+                                let value = e.value();
+                                let mut tree_limit_input = tree_limit_input.clone();
+                                tree_limit_input.set(value.clone());
+                                if let Some(v) = valid_tree_limit_input(&value) {
+                                    let mut tree_limit = tree_limit.clone();
+                                    tree_limit.set(v);
+                                }
+                            }
+                        },
+                        onchange: {
+                            let tree_limit_input = tree_limit_input.clone();
+                            let tree_limit = tree_limit.clone();
+                            move |e| {
+                                let fallback = *tree_limit.read();
+                                let committed = commit_tree_limit_input(&e.value(), fallback);
+                                let mut tree_limit = tree_limit.clone();
+                                tree_limit.set(committed);
+                                let mut tree_limit_input = tree_limit_input.clone();
+                                tree_limit_input.set(tree_limit_display_value(committed));
+                            }
                         }
                     }
                     button { class: "btn", onclick: more_tree, "Mehr" }

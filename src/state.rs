@@ -17,7 +17,7 @@ use crate::types::ScanEvent;
 #[derive(Clone)]
 pub struct JobHandle {
     /// A cancellation token for stopping the job.
-    /// 
+    ///
     /// When this token is cancelled, the scan job should gracefully terminate
     /// its operations and clean up any resources.
     pub cancel: CancellationToken,

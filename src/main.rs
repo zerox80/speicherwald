@@ -170,9 +170,9 @@ async fn main() -> anyhow::Result<()> {
     let state_with_limits = {
         let mut s = state.clone();
         s.rate_limiter = s.rate_limiter.with_limits(vec![
-            ("/scans", 30, 60),           // 30 requests per minute for scan creation
-            ("/paths/move", 10, 60),      // 10 move operations per minute
-            // Removed: ("/scans/{id}/events", ...) - doesn't work with parametrized routes
+            ("/scans", 30, 60), // 30 requests per minute for scan creation
+            ("/paths/move", 10, 60), // 10 move operations per minute
+                                // Removed: ("/scans/{id}/events", ...) - doesn't work with parametrized routes
         ]);
         s
     };

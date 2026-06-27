@@ -58,7 +58,7 @@ pub fn extract_ip_from_headers(headers: &HeaderMap, fallback: Option<IpAddr>) ->
     // in a single reverse-proxy setup than the leftmost (which can be spoofed by the client).
     // Note: In complex multi-proxy chains, this requires the last proxy to be trusted.
     if let Some(h) = headers.get("x-forwarded-for").and_then(|hv| hv.to_str().ok()) {
-        if let Some(last) = h.split(',').last() {
+        if let Some(last) = h.split(',').next_back() {
             if let Ok(ip) = last.trim().parse::<IpAddr>() {
                 return ip;
             }
@@ -119,15 +119,10 @@ where
     ///
     /// `Ok(Self)` containing `Some(SocketAddr)` if extraction succeeds,
     /// or `None` if connection information is not available
-    fn from_request_parts(
-        parts: &mut Parts,
-        state: &S,
-    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
-        async move {
-            match ConnectInfo::<SocketAddr>::from_request_parts(parts, state).await {
-                Ok(ConnectInfo(addr)) => Ok(MaybeRemoteAddr(Some(addr))),
-                Err(_) => Ok(MaybeRemoteAddr(None)),
-            }
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match ConnectInfo::<SocketAddr>::from_request_parts(parts, state).await {
+            Ok(ConnectInfo(addr)) => Ok(MaybeRemoteAddr(Some(addr))),
+            Err(_) => Ok(MaybeRemoteAddr(None)),
         }
     }
 }

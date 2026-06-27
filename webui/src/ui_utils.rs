@@ -144,8 +144,6 @@ pub fn fmt_ago_short(ts: Option<i64>) -> String {
     }
 }
 
-/// (removed duplicate trigger_download)
-
 /// Copies text to the user's clipboard and shows a toast notification.
 ///
 /// Attempts to copy the provided text to the system clipboard and displays
@@ -240,6 +238,7 @@ pub fn show_toast(message: &str) {
 /// - Uses browser's local timezone for formatting
 /// - Maximum valid timestamp is year 9999 for overflow protection
 /// - Gracefully falls back for date conversion errors
+#[allow(dead_code)]
 pub fn fmt_time_opt(ts: Option<i64>) -> String {
     match ts {
         Some(secs) => {

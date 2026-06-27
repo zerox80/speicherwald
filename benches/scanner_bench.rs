@@ -1,9 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use speicherwald::db;
 use speicherwald::scanner::run_scan;
 use speicherwald::types::ScanOptions;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::fs;
+use std::hint::black_box;
 use std::path::Path;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;

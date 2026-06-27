@@ -37,13 +37,10 @@ use tauri::{Manager, WindowUrl};
 
 /// Application state for managing the backend process.
 ///
-/// Holds a mutex-protected reference to the spawned backend child process
-/// and the port number on which the backend is running.
+/// Holds a mutex-protected reference to the spawned backend child process.
 struct BackendState {
   /// The spawned backend process handle
   child: Mutex<Option<Child>>,
-  /// The port number the backend is running on
-  port: u16,
 }
 
 /// Finds an available TCP port on the localhost interface.
@@ -317,7 +314,7 @@ fn main() {
 
       match child_res {
         Ok(child) => {
-          let state = BackendState { child: Mutex::new(Some(child)), port };
+          let state = BackendState { child: Mutex::new(Some(child)) };
           app.manage(state);
 
           // wait until ready and then open window
@@ -378,7 +375,7 @@ fn main() {
       if let tauri::WindowEvent::CloseRequested { .. } = event.event() {
         if let Some(state) = event.window().try_state::<BackendState>() {
           let mut guard = state.child.lock().unwrap();
-          kill_backend(&mut *guard);
+          kill_backend(&mut guard);
         }
       }
     })

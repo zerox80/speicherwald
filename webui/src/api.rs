@@ -339,6 +339,7 @@ pub async fn get_list(id: &str, q: &ListQuery) -> Result<Vec<ListItem>, String> 
 /// Provides comprehensive search capabilities including text matching,
 /// size filtering, file type filtering, and result limiting.
 #[derive(Debug, Clone, Default, Serialize)]
+#[allow(dead_code)]
 pub struct SearchQuery {
     /// Search query string for matching file/directory names
     pub query: String,
@@ -381,6 +382,7 @@ pub struct SearchQuery {
 /// - Use `include_files` and `include_dirs` to control result types
 /// - Results can be paginated using `limit` and `offset` parameters
 /// - Search is case-insensitive for text matching
+#[allow(dead_code)]
 pub async fn search_scan(id: &str, q: &SearchQuery) -> Result<SearchResult, String> {
     let mut qs = vec![];
     qs.push(format!("query={}", urlencoding::encode(&q.query)));

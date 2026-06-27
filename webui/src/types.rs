@@ -111,6 +111,7 @@ pub enum ListItem {
 /// Contains the items matching a search query along with metadata
 /// about the search itself, including total count and query string.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[allow(dead_code)]
 pub struct SearchResult {
     pub items: Vec<SearchItem>,
     pub total_count: i64,
@@ -122,6 +123,7 @@ pub struct SearchResult {
 /// Represents a file or directory that was found during a search operation,
 /// with relevant metadata for display and selection.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[allow(dead_code)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SearchItem {
     Dir {

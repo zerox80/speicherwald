@@ -47,6 +47,7 @@ pub struct NodeDto {
 
 /// A data transfer object for a file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct FileDto {
     /// The path of the file.
     pub path: String,
@@ -203,7 +204,7 @@ impl Default for ScanOptions {
     fn default() -> Self {
         // Calculate concurrency: use half the CPU cores, minimum 2, maximum 16
         let cpu_count = num_cpus::get();
-        let default_concurrency = (cpu_count / 2).max(2).min(16);
+        let default_concurrency = (cpu_count / 2).clamp(2, 16);
 
         Self {
             follow_symlinks: false,

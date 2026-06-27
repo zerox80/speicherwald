@@ -33,7 +33,10 @@
 //! - Database operations use transactions for consistency
 //! - Large result sets are paginated to prevent resource exhaustion
 
-use std::{path::{Path as StdPath, PathBuf}, time::Duration};
+use std::{
+    path::{Path as StdPath, PathBuf},
+    time::Duration,
+};
 
 use axum::response::sse::{Event, Sse};
 use axum::{
@@ -210,9 +213,9 @@ pub async fn create_scan(
             Ok(summary) => {
                 // FIX Bug #10: Check cancellation before marking as done
                 if cancel_child.is_cancelled() {
-                   // ... (same as Err(cancelled) block)
-                   let _ = tx_clone.send(ScanEvent::Cancelled);
-                   if let Err(e) = sqlx::query(
+                    // ... (same as Err(cancelled) block)
+                    let _ = tx_clone.send(ScanEvent::Cancelled);
+                    if let Err(e) = sqlx::query(
                         r#"UPDATE scans SET status='canceled', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1"#
                     )
                     .bind(id.to_string())
@@ -413,21 +416,18 @@ pub async fn cancel_scan(
 ) -> AppResult<impl IntoResponse> {
     let purge = q.purge.unwrap_or(false);
 
-    // FIX Bug #12 - Race condition: check status first, then cancel
+    // Keep the job registered until the worker has stopped writing scan data.
     let was_running = {
-        let mut jobs = state.jobs.write().await;
-        if let Some(handle) = jobs.remove(&id) {
+        let jobs = state.jobs.read().await;
+        if let Some(handle) = jobs.get(&id) {
             handle.cancel.cancel();
-            drop(jobs); // Release lock before any async operations
             true
         } else {
             false
         }
     };
 
-    // FIX Bug #27: Use transaction for atomic operation
-    // Update DB after releasing lock to avoid deadlock
-    if was_running && !purge {
+    if was_running {
         if let Err(e) = sqlx::query(
             r#"UPDATE scans SET status='canceled', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1 AND status='running'"#
         )
@@ -435,14 +435,33 @@ pub async fn cancel_scan(
         .execute(&state.db).await {
             tracing::error!("Failed to update scan status to canceled: {}", e);
         }
-    } else if !was_running && !purge {
+    } else if !purge {
         // Not running: act idempotently
         return Ok((StatusCode::NO_CONTENT, ""));
     }
 
     if purge {
-        // Delete scan row (cascade to nodes/files/warnings)
-        let _ = sqlx::query(r#"DELETE FROM scans WHERE id=?1"#).bind(id.to_string()).execute(&state.db).await;
+        if was_running {
+            let db = state.db.clone();
+            let jobs = state.jobs.clone();
+            tokio::spawn(async move {
+                loop {
+                    if !jobs.read().await.contains_key(&id) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                if let Err(e) =
+                    sqlx::query(r#"DELETE FROM scans WHERE id=?1"#).bind(id.to_string()).execute(&db).await
+                {
+                    tracing::error!("Failed to purge canceled scan {}: {}", id, e);
+                }
+            });
+        } else if let Err(e) =
+            sqlx::query(r#"DELETE FROM scans WHERE id=?1"#).bind(id.to_string()).execute(&state.db).await
+        {
+            tracing::error!("Failed to purge scan {}: {}", id, e);
+        }
     }
 
     Ok((StatusCode::NO_CONTENT, ""))
@@ -461,7 +480,7 @@ pub async fn cancel_scan(
 /// # Returns
 ///
 /// * `AppResult<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>>` -
-///  An SSE stream of scan events.
+///   An SSE stream of scan events.
 pub async fn scan_events(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -500,12 +519,6 @@ pub async fn scan_events(
 }
 
 // Removed - inline usage is clearer and avoids potential timezone issues
-
-
-
-
-
-
 
 const LIKE_ESCAPE: char = '!';
 const TREE_LIMIT_MAX: i64 = 2_000;
@@ -661,7 +674,6 @@ pub async fn get_tree(
         }
         // FIX Bug #8: Escape special characters to prevent SQL injection via path
         let pfx_escaped = escape_like_pattern(&pfx);
-        let pfx_upper = format!("{}~", pfx_escaped);
         // FIX Bug #3 (Unicode Query): Use LIKE instead of range optimization
         // Range optimization (path >= pfx AND path < pfx_upper) is tricky with Unicode.
         // SQLite's LIKE operator is safer and sufficient here given the index.
@@ -797,9 +809,9 @@ pub async fn get_top(
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct ListQuery {
     /// The path of the directory to list. If not provided, the root directories of the scan are listed.
-    pub path: Option<String>,  // if None: list roots only (directories)
+    pub path: Option<String>, // if None: list roots only (directories)
     /// The sort order for the results (e.g., "allocated", "logical", "name", "type").
-    pub sort: Option<String>,  // allocated|logical|name|type
+    pub sort: Option<String>, // allocated|logical|name|type
     /// The sort direction ("asc" or "desc").
     pub order: Option<String>, // asc|desc
     /// The maximum number of results to return.
@@ -840,7 +852,8 @@ pub async fn get_list(
     }
     let limit_usize = limit as usize;
     // Use checked_add to detect overflow instead of saturating_add
-    let total_span = offset.checked_add(limit_usize)
+    let total_span = offset
+        .checked_add(limit_usize)
         .ok_or_else(|| AppError::BadRequest("offset + limit causes integer overflow".into()))?;
     if total_span > MAX_TOTAL_SPAN {
         return Err(AppError::BadRequest("offset + limit exceeds maximum span".into()));
@@ -920,27 +933,34 @@ pub async fn get_list(
     // With path: list children
     let path = q.path.as_ref().unwrap();
     let pnorm = normalize_query_path(path)?;
-    let dir_rows = sqlx::query(
-        r#"SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime
-           FROM nodes WHERE scan_id=?1 AND is_dir=1 AND parent_path=?2"#,
-    )
-    .bind(id.to_string())
-    .bind(&pnorm)
-    .fetch_all(&state.db)
-    .await?;
-    let file_rows = sqlx::query(
-        r#"SELECT path, parent_path, logical_size, allocated_size, mtime, atime
-           FROM files WHERE scan_id=?1 AND parent_path=?2"#,
-    )
-    .bind(id.to_string())
-    .bind(&pnorm)
-    .fetch_all(&state.db)
-    .await?;
+    let order_clause = list_order_clause(q.sort.as_deref(), q.order.as_deref());
+    let sql = format!(
+        r#"SELECT kind_rank, path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime
+           FROM (
+               SELECT 0 AS kind_rank, path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime
+               FROM nodes
+               WHERE scan_id=? AND is_dir=1 AND parent_path=?
+               UNION ALL
+               SELECT 1 AS kind_rank, path, parent_path, NULL AS depth, logical_size, allocated_size, NULL AS file_count, NULL AS dir_count, mtime, atime
+               FROM files
+               WHERE scan_id=? AND parent_path=?
+           )
+           {order_clause}
+           LIMIT ? OFFSET ?"#
+    );
+    let rows = sqlx::query(&sql)
+        .bind(id.to_string())
+        .bind(&pnorm)
+        .bind(id.to_string())
+        .bind(&pnorm)
+        .bind(limit)
+        .bind(offset as i64)
+        .fetch_all(&state.db)
+        .await?;
 
-    let mut items: Vec<ListItem> = Vec::with_capacity(dir_rows.len() + file_rows.len());
-    for r in dir_rows {
+    let mut items: Vec<ListItem> = Vec::with_capacity(rows.len());
+    for r in rows {
         let p: String = r.get("path");
-        // FIX Bug #34 - Better error handling for file_name
         let name = std::path::Path::new(&p)
             .file_name()
             .and_then(|s| s.to_str())
@@ -948,43 +968,33 @@ pub async fn get_list(
             .unwrap_or_else(|| p.clone());
         let mtime = r.get::<Option<i64>, _>("mtime");
         let atime = r.get::<Option<i64>, _>("atime");
-        items.push(ListItem::Dir {
-            name,
-            path: p,
-            parent_path: r.get("parent_path"),
-            depth: r.get("depth"),
-            logical_size: r.get("logical_size"),
-            allocated_size: r.get("allocated_size"),
-            file_count: r.get("file_count"),
-            dir_count: r.get("dir_count"),
-            mtime,
-            atime,
-        });
-    }
-    for r in file_rows {
-        let p: String = r.get("path");
-        // FIX Bug #35 - Better error handling for file_name
-        let name = std::path::Path::new(&p)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| p.clone());
-        let mtime = r.get::<Option<i64>, _>("mtime");
-        let atime = r.get::<Option<i64>, _>("atime");
-        items.push(ListItem::File {
-            name,
-            path: p,
-            parent_path: r.get("parent_path"),
-            logical_size: r.get("logical_size"),
-            allocated_size: r.get("allocated_size"),
-            mtime,
-            atime,
-        });
+        if r.get::<i64, _>("kind_rank") == 0 {
+            items.push(ListItem::Dir {
+                name,
+                path: p,
+                parent_path: r.get("parent_path"),
+                depth: r.get::<Option<i64>, _>("depth").unwrap_or(0),
+                logical_size: r.get("logical_size"),
+                allocated_size: r.get("allocated_size"),
+                file_count: r.get::<Option<i64>, _>("file_count").unwrap_or(0),
+                dir_count: r.get::<Option<i64>, _>("dir_count").unwrap_or(0),
+                mtime,
+                atime,
+            });
+        } else {
+            items.push(ListItem::File {
+                name,
+                path: p,
+                parent_path: r.get("parent_path"),
+                logical_size: r.get("logical_size"),
+                allocated_size: r.get("allocated_size"),
+                mtime,
+                atime,
+            });
+        }
     }
 
-    sort_items(&mut items[..], q.sort.as_deref(), q.order.as_deref());
-    let slice = items.into_iter().skip(offset).take(limit_usize).collect::<Vec<_>>();
-    Ok(Json(slice))
+    Ok(Json(items))
 }
 
 // ---------------------- RECENT ENDPOINT ----------------------
@@ -1021,19 +1031,9 @@ pub async fn get_recent(
 ) -> AppResult<impl IntoResponse> {
     let scope = q.scope.as_deref().unwrap_or("dirs");
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
-    // Fetch a superset to compute atime and then take top-N
-    // Use saturating_mul to prevent overflow, but keep reasonable bounds
-    let fetch_multiplier = std::env::var("SPEICHERWALD_RECENT_FETCH_MULTIPLIER")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(10)
-        .clamp(5, 20);
-    let fetch_cap = limit.saturating_mul(fetch_multiplier).clamp(100, 2000) as i64;
 
-    // Optional subtree filter: build path range [prefix, prefix + high]
     let mut subtree_eq: Option<String> = None;
-    let mut subtree_lo: Option<String> = None;
-    let mut subtree_hi: Option<String> = None;
+    let mut subtree_like: Option<String> = None;
     if let Some(p) = q.path.as_ref() {
         let peq = normalize_query_path(p)?;
         let mut pfx = peq.clone();
@@ -1044,31 +1044,27 @@ pub async fn get_recent(
                 pfx.push('/');
             }
         }
+        let pfx_escaped = escape_like_pattern(&pfx);
         subtree_eq = Some(peq);
-        subtree_lo = Some(pfx.clone());
-        // Use a high but valid ASCII character instead of Unicode max
-        subtree_hi = Some(format!("{}~", pfx));
+        subtree_like = Some(format!("{}%", pfx_escaped));
     }
 
     let mut items: Vec<TopItem> = Vec::new();
     let want_dirs = scope == "dirs" || scope == "all";
     let want_files = scope == "files" || scope == "all";
 
-    // FIX Bug #2,#8 - Use QueryBuilder instead of string replacement
     if want_dirs {
         let mut qb = QueryBuilder::new(
             "SELECT path, parent_path, depth, logical_size, allocated_size, file_count, dir_count, mtime, atime FROM nodes WHERE scan_id="
         );
         qb.push_bind(id.to_string()).push(" AND is_dir=1");
 
-        if let (Some(eq), Some(lo), Some(hi)) =
-            (subtree_eq.as_ref(), subtree_lo.as_ref(), subtree_hi.as_ref())
-        {
+        if let (Some(eq), Some(like)) = (subtree_eq.as_ref(), subtree_like.as_ref()) {
             qb.push(" AND (path = ").push_bind(eq);
-            qb.push(" OR (path >= ").push_bind(lo);
-            qb.push(" AND path < ").push_bind(hi).push("))");
+            qb.push(" OR path LIKE ").push_bind(like);
+            qb.push(" ESCAPE '!')");
         }
-        qb.push(" LIMIT ").push_bind(fetch_cap);
+        qb.push(" ORDER BY COALESCE(atime, 0) DESC, path ASC LIMIT ").push_bind(limit);
 
         let rows = qb.build().fetch_all(&state.db).await?;
         for r in rows {
@@ -1088,21 +1084,18 @@ pub async fn get_recent(
             });
         }
     }
-    // FIX Bug #3,#9 - Use QueryBuilder instead of string replacement
     if want_files {
         let mut qb = QueryBuilder::new(
             "SELECT path, parent_path, logical_size, allocated_size, mtime, atime FROM files WHERE scan_id=",
         );
         qb.push_bind(id.to_string());
 
-        if let (Some(eq), Some(lo), Some(hi)) =
-            (subtree_eq.as_ref(), subtree_lo.as_ref(), subtree_hi.as_ref())
-        {
+        if let (Some(eq), Some(like)) = (subtree_eq.as_ref(), subtree_like.as_ref()) {
             qb.push(" AND (path = ").push_bind(eq);
-            qb.push(" OR (path >= ").push_bind(lo);
-            qb.push(" AND path < ").push_bind(hi).push("))");
+            qb.push(" OR path LIKE ").push_bind(like);
+            qb.push(" ESCAPE '!')");
         }
-        qb.push(" LIMIT ").push_bind(fetch_cap);
+        qb.push(" ORDER BY COALESCE(atime, 0) DESC, path ASC LIMIT ").push_bind(limit);
 
         let rows = qb.build().fetch_all(&state.db).await?;
         for r in rows {
@@ -1128,6 +1121,36 @@ pub async fn get_recent(
     items.truncate(limit as usize);
 
     Ok(Json(items))
+}
+
+fn list_order_clause(sort: Option<&str>, order: Option<&str>) -> &'static str {
+    let sort_key = match sort {
+        Some("name") | Some("logical") | Some("type") | Some("modified") | Some("accessed")
+        | Some("allocated") => sort.unwrap(),
+        _ => "allocated",
+    };
+
+    let desc = match order {
+        Some("asc") => false,
+        Some("desc") => true,
+        None => matches!(sort_key, "logical" | "allocated" | "modified" | "accessed"),
+        _ => false,
+    };
+
+    match (sort_key, desc) {
+        ("name", false) => "ORDER BY path COLLATE NOCASE ASC, kind_rank ASC, path ASC",
+        ("name", true) => "ORDER BY path COLLATE NOCASE DESC, kind_rank ASC, path DESC",
+        ("logical", false) => "ORDER BY logical_size ASC, path COLLATE NOCASE ASC",
+        ("logical", true) => "ORDER BY logical_size DESC, path COLLATE NOCASE ASC",
+        ("type", false) => "ORDER BY kind_rank ASC, path COLLATE NOCASE ASC",
+        ("type", true) => "ORDER BY kind_rank DESC, path COLLATE NOCASE ASC",
+        ("modified", false) => "ORDER BY COALESCE(mtime, 0) ASC, path COLLATE NOCASE ASC",
+        ("modified", true) => "ORDER BY COALESCE(mtime, 0) DESC, path COLLATE NOCASE ASC",
+        ("accessed", false) => "ORDER BY COALESCE(atime, 0) ASC, path COLLATE NOCASE ASC",
+        ("accessed", true) => "ORDER BY COALESCE(atime, 0) DESC, path COLLATE NOCASE ASC",
+        ("allocated", false) => "ORDER BY allocated_size ASC, path COLLATE NOCASE ASC",
+        _ => "ORDER BY allocated_size DESC, path COLLATE NOCASE ASC",
+    }
 }
 
 fn sort_items(items: &mut [ListItem], sort: Option<&str>, order: Option<&str>) {
@@ -1222,35 +1245,33 @@ fn get_atime(i: &ListItem) -> i64 {
     }
 }
 
-async fn get_subtree_totals(
-    id: Uuid,
-    path: &str,
-    pool: &sqlx::SqlitePool,
-) -> AppResult<(i64, i64)> {
-    let row = sqlx::query(
-        "SELECT file_count, dir_count FROM nodes WHERE scan_id = ?1 AND path = ?2"
-    )
-    .bind(id.to_string())
-    .bind(path)
-    .fetch_optional(pool)
-    .await?;
+async fn get_subtree_totals(id: Uuid, path: &str, pool: &sqlx::SqlitePool) -> AppResult<(i64, i64)> {
+    let row = sqlx::query("SELECT file_count, dir_count FROM nodes WHERE scan_id = ?1 AND path = ?2")
+        .bind(id.to_string())
+        .bind(path)
+        .fetch_optional(pool)
+        .await?;
 
     if let Some(r) = row {
-         Ok((r.get::<i64, _>("file_count"), r.get::<i64, _>("dir_count")))
+        Ok((r.get::<i64, _>("file_count"), r.get::<i64, _>("dir_count")))
     } else {
         Ok((0, 0))
     }
 }
 
 async fn get_mtime_secs(path: &str) -> Option<i64> {
-     tokio::fs::metadata(path).await.ok()
+    tokio::fs::metadata(path)
+        .await
+        .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
 }
 
 async fn get_atime_secs(path: &str) -> Option<i64> {
-     tokio::fs::metadata(path).await.ok()
+    tokio::fs::metadata(path)
+        .await
+        .ok()
         .and_then(|m| m.accessed().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
@@ -1262,8 +1283,7 @@ mod tests {
     use http_body_util::BodyExt;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    #[tokio::test]
-    async fn get_tree_clamps_oversized_limit() {
+    async fn test_state_with_scan() -> (AppState, Uuid) {
         let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
         crate::db::init_db(&pool).await.unwrap();
         let state = AppState::new(pool.clone(), crate::config::AppConfig::default());
@@ -1280,6 +1300,13 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
+
+        (state, scan_id)
+    }
+
+    #[tokio::test]
+    async fn get_tree_clamps_oversized_limit() {
+        let (state, scan_id) = test_state_with_scan().await;
 
         for idx in 0..2_100 {
             sqlx::query(
@@ -1310,5 +1337,108 @@ mod tests {
         let items: Vec<NodeDto> = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(items.len(), TREE_LIMIT_MAX as usize);
+    }
+
+    #[tokio::test]
+    async fn get_list_sorts_in_sql_before_paginating() {
+        let (state, scan_id) = test_state_with_scan().await;
+        let parent = r#"C:\root"#.to_string();
+
+        for (path, allocated) in [(r#"C:\root\dir-low"#, 100), (r#"C:\root\dir-high"#, 300)] {
+            sqlx::query(
+                r#"INSERT INTO nodes
+                   (scan_id, path, parent_path, depth, is_dir, logical_size, allocated_size, file_count, dir_count)
+                   VALUES (?1, ?2, ?3, 1, 1, ?4, ?4, 0, 0)"#,
+            )
+            .bind(scan_id.to_string())
+            .bind(path)
+            .bind(Some(parent.clone()))
+            .bind(allocated)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+
+        for (path, allocated) in [(r#"C:\root\file-mid.txt"#, 200), (r#"C:\root\file-top.txt"#, 400)] {
+            sqlx::query(
+                r#"INSERT INTO files
+                   (scan_id, path, parent_path, logical_size, allocated_size)
+                   VALUES (?1, ?2, ?3, ?4, ?4)"#,
+            )
+            .bind(scan_id.to_string())
+            .bind(path)
+            .bind(Some(parent.clone()))
+            .bind(allocated)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+
+        let response = get_list(
+            State(state),
+            Path(scan_id),
+            Query(ListQuery {
+                path: Some(parent),
+                sort: Some("allocated".to_string()),
+                order: Some("desc".to_string()),
+                limit: Some(2),
+                offset: Some(1),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let items: Vec<ListItem> = serde_json::from_slice(&body).unwrap();
+        let paths: Vec<String> = items
+            .into_iter()
+            .map(|item| match item {
+                ListItem::Dir { path, .. } | ListItem::File { path, .. } => path,
+            })
+            .collect();
+
+        assert_eq!(paths, vec![r#"C:\root\dir-high"#, r#"C:\root\file-mid.txt"#]);
+    }
+
+    #[tokio::test]
+    async fn get_recent_orders_before_limiting() {
+        let (state, scan_id) = test_state_with_scan().await;
+        let parent = r#"C:\root"#.to_string();
+
+        for idx in 0..120 {
+            sqlx::query(
+                r#"INSERT INTO files
+                   (scan_id, path, parent_path, logical_size, allocated_size, atime)
+                   VALUES (?1, ?2, ?3, 1, 1, ?4)"#,
+            )
+            .bind(scan_id.to_string())
+            .bind(format!(r#"C:\root\file-{idx:03}.txt"#))
+            .bind(Some(parent.clone()))
+            .bind(idx as i64)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+
+        let response = get_recent(
+            State(state),
+            Path(scan_id),
+            Query(RecentQuery { scope: Some("files".to_string()), limit: Some(1), path: Some(parent) }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let items: Vec<TopItem> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            TopItem::File { path, atime, .. } => {
+                assert_eq!(path, r#"C:\root\file-119.txt"#);
+                assert_eq!(*atime, Some(119));
+            }
+            other => panic!("expected a file, got {other:?}"),
+        }
     }
 }

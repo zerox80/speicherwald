@@ -250,20 +250,15 @@ impl EndpointRateLimiter {
         // Extract existing limiters or create new HashMap
         let mut limiters_map = match Arc::try_unwrap(self.limiters) {
             Ok(rwlock) => rwlock.into_inner(),
-            Err(arc) => arc
-                .try_read()
-                .map(|guard| guard.clone())
-                .unwrap_or_else(|_| HashMap::new()),
+            Err(arc) => arc.try_read().map(|guard| guard.clone()).unwrap_or_else(|_| HashMap::new()),
         };
-        
+
         // Add/update new limits
         for (endpoint, max_requests, window_seconds) in limits {
             limiters_map.insert(endpoint.to_string(), RateLimiter::new(max_requests, window_seconds));
         }
-        
-        Self {
-            limiters: Arc::new(RwLock::new(limiters_map))
-        }
+
+        Self { limiters: Arc::new(RwLock::new(limiters_map)) }
     }
 
     /// Checks if a request to a specific endpoint from a given IP address is allowed.
@@ -317,6 +312,7 @@ impl EndpointRateLimiter {
 /// # Arguments
 ///
 /// * `limiter` - The `RateLimiter` to clean up
+#[allow(dead_code)]
 pub async fn cleanup_task(limiter: RateLimiter) {
     let mut interval = tokio::time::interval(Duration::from_secs(300)); // Clean every 5 minutes
 

@@ -57,11 +57,21 @@ mod tests {
             follow_symlinks: false,
             include_hidden: true,
             measure_logical: true,
-            measure_allocated: true,
+            measure_allocated: false,
             excludes: vec![],
             max_depth: None,
             concurrency: Some(4),
         };
+        let expected_files = [
+            temp_dir.path().join("file1.txt"),
+            temp_dir.path().join("dir1/file2.txt"),
+            temp_dir.path().join("dir1/subdir1/file3.txt"),
+            temp_dir.path().join(".hidden/secret.txt"),
+        ];
+        let expected_logical_size: u64 = expected_files
+            .iter()
+            .map(|path| fs::metadata(path).unwrap().len())
+            .sum();
 
         let summary = run_scan(
             pool.clone(),
@@ -79,8 +89,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(summary.total_files > 0);
-        assert!(summary.total_dirs > 0);
+        assert_eq!(summary.total_files, 4);
+        assert_eq!(summary.total_dirs, 6);
+        assert_eq!(summary.total_logical_size, expected_logical_size);
+        assert_eq!(summary.total_allocated_size, expected_logical_size);
 
         let nodes_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE scan_id=?1")
             .bind(id.to_string())
@@ -92,8 +104,16 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert!(nodes_count > 0);
-        assert!(files_count >= 0);
+        let stored_logical_size: i64 =
+            sqlx::query_scalar("SELECT COALESCE(SUM(logical_size), 0) FROM files WHERE scan_id=?1")
+                .bind(id.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(nodes_count, summary.total_dirs as i64);
+        assert_eq!(files_count, summary.total_files as i64);
+        assert_eq!(stored_logical_size, summary.total_logical_size as i64);
     }
 
     #[tokio::test]

@@ -290,7 +290,7 @@ pub fn validate_file_path(path: &str) -> Result<String, (StatusCode, Json<serde_
         if !is_extended {
             for c in INVALID_CHARS {
                 if path.contains(*c) {
-                     return Err((
+                    return Err((
                         StatusCode::BAD_REQUEST,
                         Json(json!({
                             "error": {

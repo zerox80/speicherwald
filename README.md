@@ -458,6 +458,8 @@ The GitHub Actions workflow at `.github/workflows/ci.yml` runs on Windows and Ub
 - On pushes to `main` and manual runs, a Windows portable ZIP is built and uploaded as an artifact
 - The ZIP contains `speicherwald.exe`, the built `ui/` folder, `RUN-SpeicherWald.cmd`, and the desktop launcher when available
 - The packaging job verifies the required ZIP entries before upload
+- On `main`, the verified ZIP is also published to the rolling `main-build` pre-release, so the newest build is always at
+  <https://github.com/zerox80/speicherwald/releases/download/main-build/speicherwald-portable-windows-x64.zip>
 
 ## 📦 Packaging & Distribution
 

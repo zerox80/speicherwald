@@ -114,3 +114,63 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
           retention-days: 30
+
+  publish-main-build:
+    name: Publish main build to Releases
+    runs-on: ubuntu-latest
+    needs: package-windows
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_TAG: main-build
+      ASSET_NAME: speicherwald-portable-windows-x64.zip
+
+    steps:
+      - name: Download portable ZIP
+        uses: actions/download-artifact@v7
+        with:
+          name: speicherwald-portable-windows-x64
+          path: dist
+
+      - name: Update rolling pre-release
+        run: |
+          set -euo pipefail
+
+          zip="$(find dist -maxdepth 1 -name '*.zip' | head -n 1)"
+          if [ -z "$zip" ]; then
+            echo "No portable ZIP found in dist/." >&2
+            exit 1
+          fi
+
+          # Stable file name so the download link never changes.
+          mkdir -p upload
+          cp "$zip" "upload/$ASSET_NAME"
+
+          {
+            echo "Automatic build of the current \`main\` branch. Replaced on every push."
+            echo
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Built: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo "- Original file name: $(basename "$zip")"
+            echo "- Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > notes.md
+
+          if gh release view "$BUILD_TAG" > /dev/null 2>&1; then
+            # Move the tag to this commit, then swap the asset in place.
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$BUILD_TAG" \
+              -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            gh release upload "$BUILD_TAG" "upload/$ASSET_NAME" --clobber
+            gh release edit "$BUILD_TAG" --notes-file notes.md --prerelease
+          else
+            gh release create "$BUILD_TAG" "upload/$ASSET_NAME" \
+              --target "$GITHUB_SHA" \
+              --title "Latest main build" \
+              --notes-file notes.md \
+              --prerelease \
+              --latest=false
+          fi
+
+          echo "Download: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$BUILD_TAG/$ASSET_NAME" >> "$GITHUB_STEP_SUMMARY"
